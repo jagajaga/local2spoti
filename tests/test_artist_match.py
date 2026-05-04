@@ -70,3 +70,30 @@ async def test_artist_match_no_artist_results():
     )
     [r] = results
     assert r.decision == "no_artist"
+
+
+from local2spoti.artist_match import match_per_track
+
+
+async def test_per_track_fallback_finds_match():
+    client = AsyncMock()
+    client.search_tracks.return_value = [
+        {"id": "t1", "name": "Around the World", "duration_ms": 423000,
+         "artists": [{"name": "Daft Punk"}],
+         "album": {"name": "Homework"}},
+    ]
+    f = LocalFile(path="/x.mp3", mtime=1, size=1, format="mp3",
+                  artist="Daft Punk", title="Around the World",
+                  duration_ms=423000, status=FileStatus.SCANNED)
+    [r] = await match_per_track(client=client, files=[f], threshold=Threshold.BALANCED)
+    assert r.decision == "auto"
+    assert r.top_candidate.spotify_track_id == "t1"
+
+
+async def test_per_track_fallback_no_results():
+    client = AsyncMock()
+    client.search_tracks.return_value = []
+    f = LocalFile(path="/x.mp3", mtime=1, size=1, format="mp3",
+                  artist="Mystery", title="Mystery", status=FileStatus.SCANNED)
+    [r] = await match_per_track(client=client, files=[f], threshold=Threshold.BALANCED)
+    assert r.decision == "unmatched"

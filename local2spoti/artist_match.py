@@ -98,3 +98,35 @@ async def match_artist_group(
         )
         results.append(FileMatchResult(f, decision, top, top5))
     return results
+
+
+async def match_per_track(
+    *,
+    client: SpotifyClient,
+    files: list[LocalFile],
+    threshold: Threshold,
+) -> list[FileMatchResult]:
+    out: list[FileMatchResult] = []
+    for f in files:
+        if not f.artist or not f.title:
+            out.append(FileMatchResult(f, "unmatched", None, []))
+            continue
+        items = await client.search_tracks(f.artist, f.title, limit=5)
+        scored = [c for c in (_track_to_candidate(t, file=f) for t in items) if c]
+        scored.sort(key=lambda c: -c.confidence)
+        top5 = scored[:5]
+        for i, c in enumerate(top5, start=1):
+            c.rank = i
+        if not top5:
+            out.append(FileMatchResult(f, "unmatched", None, []))
+            continue
+        top = top5[0]
+        decision = decide(
+            artist_sim=top.artist_similarity,
+            title_sim=top.title_similarity,
+            album_match=(top.spotify_album is not None and f.album is not None),
+            duration_delta_ms=top.duration_delta_ms,
+            threshold=threshold,
+        )
+        out.append(FileMatchResult(f, decision, top, top5))
+    return out
