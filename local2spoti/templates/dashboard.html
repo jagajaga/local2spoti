@@ -45,25 +45,63 @@
     {% endif %}
   </section>
   <section class="bg-zinc-900 rounded-lg p-5 md:col-span-2">
-    <h2 class="text-lg font-semibold mb-3">Status</h2>
-    <div class="grid grid-cols-4 gap-4 text-center">
-      <a href="/files?status=matched" class="bg-zinc-800 rounded p-3">
-        <div class="text-2xl">{{ counts.matched or 0 }}</div>
+    <div class="flex items-baseline justify-between mb-3">
+      <h2 class="text-lg font-semibold">Status</h2>
+      {% set sum = (counts.matched or 0) + (counts.review or 0) + (counts.scanned or 0)
+                   + (counts.unmatched or 0) + (counts.missing or 0)
+                   + (counts.error or 0) + (counts.new or 0) %}
+      <span class="text-xs text-zinc-400 font-mono">
+        {{ sum }} / {{ total_files }} accounted for
+      </span>
+    </div>
+    <!-- Grid covers EVERY FileStatus value so the numbers add up to
+         total_files. Scanned files (post-metadata, awaiting Spotify match)
+         used to be invisible — clicking 'Scanned' takes you to the table
+         where you can see them; clicking Start scan re-runs match on
+         every scanned file. -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
+      <a href="/files?status=matched" class="bg-zinc-800 rounded p-3 hover:bg-zinc-700"
+         title="Auto-matched to a Spotify track">
+        <div class="text-xl text-emerald-400">{{ counts.matched or 0 }}</div>
         <div class="text-xs text-zinc-400">Matched</div>
       </a>
-      <a href="/review" class="bg-zinc-800 rounded p-3">
-        <div class="text-2xl">{{ counts.review or 0 }}</div>
+      <a href="/review" class="bg-zinc-800 rounded p-3 hover:bg-zinc-700"
+         title="Ambiguous — multiple plausible Spotify candidates; pick one in the review queue">
+        <div class="text-xl text-amber-400">{{ counts.review or 0 }}</div>
         <div class="text-xs text-zinc-400">Review</div>
       </a>
-      <a href="/unmatched" class="bg-zinc-800 rounded p-3">
-        <div class="text-2xl">{{ counts.unmatched or 0 }}</div>
+      <a href="/files?status=scanned" class="bg-zinc-800 rounded p-3 hover:bg-zinc-700"
+         title="Tags read but Spotify match not yet attempted (or queued from AI/AcoustID re-tag)">
+        <div class="text-xl text-blue-400">{{ counts.scanned or 0 }}</div>
+        <div class="text-xs text-zinc-400">Scanned (awaiting match)</div>
+      </a>
+      <a href="/unmatched" class="bg-zinc-800 rounded p-3 hover:bg-zinc-700"
+         title="Spotify search found nothing">
+        <div class="text-xl text-zinc-300">{{ counts.unmatched or 0 }}</div>
         <div class="text-xs text-zinc-400">Unmatched</div>
       </a>
-      <a href="/files?status=error" class="bg-zinc-800 rounded p-3">
-        <div class="text-2xl">{{ counts.error or 0 }}</div>
+      <a href="/files?status=missing" class="bg-zinc-800 rounded p-3 hover:bg-zinc-700"
+         title="File present in DB but no longer on disk">
+        <div class="text-xl text-zinc-500">{{ counts.missing or 0 }}</div>
+        <div class="text-xs text-zinc-400">Missing</div>
+      </a>
+      <a href="/files?status=new" class="bg-zinc-800 rounded p-3 hover:bg-zinc-700"
+         title="Discovered but not yet tag-extracted (transient mid-scan)">
+        <div class="text-xl text-zinc-500">{{ counts.new or 0 }}</div>
+        <div class="text-xs text-zinc-400">New</div>
+      </a>
+      <a href="/files?status=error" class="bg-zinc-800 rounded p-3 hover:bg-zinc-700"
+         title="Scan-time error on this file (e.g. corrupt tags, Spotify 5xx)">
+        <div class="text-xl text-red-400">{{ counts.error or 0 }}</div>
         <div class="text-xs text-zinc-400">Errors</div>
       </a>
     </div>
+    {% if counts.scanned and counts.scanned > 0 %}
+    <p class="text-xs text-zinc-400 mt-3">
+      📌 <strong>{{ counts.scanned }}</strong> files have tags read but no Spotify match attempted yet.
+      Click <em>Start scan</em> below — it'll process them (and auto-rescue any unmatched via AcoustID + Claude).
+    </p>
+    {% endif %}
   </section>
   <section class="bg-zinc-900 rounded-lg p-5 md:col-span-2"
            hx-ext="ws" ws-connect="/ws/progress">
