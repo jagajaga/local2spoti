@@ -376,14 +376,17 @@ async def push(request: Request) -> JSONResponse:
 
 
 @router.post("/deep_scan")
-async def deep_scan(request: Request, limit: int = 100000) -> JSONResponse:
+async def deep_scan(
+    request: Request, limit: int = 100000, status: str = "unmatched",
+) -> JSONResponse:
     """Kick off an AcoustID deep scan as a background task.
 
-    Runs in its own task slot so it can execute in parallel with /api/scan/start
-    and /api/ai_scan. The actual loop body lives in `recovery.deep_scan_unmatched`
-    so the smart Start-scan flow can chain it.
+    `status` selects the source pool (defaults to 'unmatched'; the /review
+    page passes 'review' to re-fingerprint files with bad candidates).
     """
     state = request.app.state.app_state
+    if status not in ("unmatched", "review"):
+        return JSONResponse({"error": f"invalid status: {status}"}, status_code=400)
     if not fpcalc_available():
         return JSONResponse({"error": "fpcalc not installed"}, status_code=400)
     if not state.settings.acoustid_api_key:
@@ -395,17 +398,22 @@ async def deep_scan(request: Request, limit: int = 100000) -> JSONResponse:
         )
     if not state.any_job_running():
         state.cancel_event.clear()
-    state.deep_scan_task = asyncio.create_task(deep_scan_unmatched(state, limit=limit))
+    state.deep_scan_task = asyncio.create_task(
+        deep_scan_unmatched(state, limit=limit, status=status)
+    )
     return JSONResponse(
         {
             "ok": True,
-            "message": "Deep scan started — watch the progress bar",
+            "message": f"Deep scan started on {status} files — watch the bar",
         }
     )
 
 
 @router.post("/ai_scan")
-async def ai_scan(request: Request, batch_size: int = 20, limit: int = 100000) -> JSONResponse:
+async def ai_scan(
+    request: Request, batch_size: int = 20, limit: int = 100000,
+    status: str = "unmatched",
+) -> JSONResponse:
     """Kick off Claude metadata identification as a background task.
 
     Returns immediately. Progress events stream over the WebSocket and surface
@@ -413,6 +421,8 @@ async def ai_scan(request: Request, batch_size: int = 20, limit: int = 100000) -
     `message` of the last event when finished.
     """
     state = request.app.state.app_state
+    if status not in ("unmatched", "review"):
+        return JSONResponse({"error": f"invalid status: {status}"}, status_code=400)
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return JSONResponse(
             {"error": "ANTHROPIC_API_KEY not set"}, status_code=400,
@@ -425,12 +435,12 @@ async def ai_scan(request: Request, batch_size: int = 20, limit: int = 100000) -
     if not state.any_job_running():
         state.cancel_event.clear()
     state.ai_scan_task = asyncio.create_task(
-        ai_scan_unmatched(state, batch_size=batch_size, limit=limit)
+        ai_scan_unmatched(state, batch_size=batch_size, limit=limit, status=status)
     )
     return JSONResponse(
         {
             "ok": True,
-            "message": "AI scan started — watch the progress bar",
+            "message": f"AI scan started on {status} files — watch the bar",
         }
     )
 

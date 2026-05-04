@@ -164,3 +164,46 @@ async def test_match_endpoint_starts_in_scan_slot(tmp_path, monkeypatch):
             task = app.state.app_state.scan_task
             assert task is not None
             await asyncio.wait_for(task, timeout=5.0)
+
+
+async def test_deep_scan_status_review_only_processes_review_files(tmp_path, monkeypatch):
+    """The /review page passes ?status=review; verify the endpoint
+    queries the correct pool. We don't actually call AcoustID — the test
+    just verifies the SQL filter is applied via row count."""
+    from local2spoti.recovery import deep_scan_unmatched
+    from datetime import UTC, datetime as _dt
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    db = tmp_path / ".local2spoti" / "state.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    async with connect(db) as conn:
+        await init_schema(conn)
+        now = _dt(2026, 5, 4, tzinfo=UTC)
+        await repo.upsert_local_file(conn, LocalFile(
+            path="/r.mp3", mtime=1, size=1, format="mp3",
+            artist="A", title="T", status=FileStatus.REVIEW,
+        ), now=now)
+        await repo.upsert_local_file(conn, LocalFile(
+            path="/u.mp3", mtime=1, size=1, format="mp3",
+            artist="B", title="T", status=FileStatus.UNMATCHED,
+        ), now=now)
+
+    # Fake state with bus we capture; no real AcoustID call (no fpcalc here)
+    from local2spoti.state import AppState
+    from local2spoti.config import Settings
+    settings = Settings(spotify_client_id="x", acoustid_api_key="bogus")
+    captured: list = []
+    class _Bus:
+        async def publish(self, e): captured.append(e)
+        async def flush(self): pass
+    state = AppState(settings=settings)
+    state.bus = _Bus()  # type: ignore[assignment]
+    import asyncio
+    state.cancel_event = asyncio.Event()
+    async with connect(db) as conn:
+        state.db_conn = conn
+        # status=review: should only consider the 1 review file
+        await deep_scan_unmatched(state, status="review")
+    # First emitted event should mention 1 file (only the review one)
+    fingerprinting_msgs = [e for e in captured if "fingerprint" in (e.message or "")]
+    assert any("1 review files" in (e.message or "") for e in fingerprinting_msgs)

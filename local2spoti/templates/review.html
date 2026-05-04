@@ -9,12 +9,22 @@
 <section class="mb-4 p-4 bg-zinc-900 rounded-lg space-y-3"
          hx-ext="ws" ws-connect="/ws/progress">
   <div class="flex flex-wrap gap-2 items-center">
-    <span class="text-sm text-zinc-300 font-semibold mr-1">Background jobs:</span>
-    <button hx-post="/api/ai_scan" hx-target="#review-job-status" hx-swap="innerHTML"
+    <span class="text-sm text-zinc-300 font-semibold mr-1">
+      Re-identify these review files:
+    </span>
+    <!-- Both buttons pass status=review so they operate on the visible
+         review queue, not the global unmatched pool. Successful
+         re-identification clears the file's stale candidates and pushes
+         it back to 'scanned' for fresh matching on the next Spotify run. -->
+    <button hx-post="/api/ai_scan?status=review"
+            hx-target="#review-job-status" hx-swap="innerHTML"
+            hx-confirm="Send all review-status files to Claude for fresh artist/title? This drops their existing candidates."
             class="px-3 py-1 bg-purple-700 hover:bg-purple-600 rounded text-sm">
       Try AI matching (Claude)
     </button>
-    <button hx-post="/api/deep_scan" hx-target="#review-job-status" hx-swap="innerHTML"
+    <button hx-post="/api/deep_scan?status=review"
+            hx-target="#review-job-status" hx-swap="innerHTML"
+            hx-confirm="Re-fingerprint all review-status files via AcoustID? This drops their existing candidates."
             class="px-3 py-1 bg-zinc-700 hover:bg-zinc-600 rounded text-sm">
       Deep scan (AcoustID)
     </button>

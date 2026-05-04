@@ -21,31 +21,37 @@ if TYPE_CHECKING:
     from .state import AppState
 
 
-async def deep_scan_unmatched(state: "AppState", *, limit: int = 100000) -> dict[str, int]:
-    """Run AcoustID fingerprint + lookup over every `status='unmatched'` file.
+async def deep_scan_unmatched(
+    state: "AppState", *, limit: int = 100000, status: str = "unmatched",
+) -> dict[str, int]:
+    """Run AcoustID fingerprint + lookup over every file with `status=<status>`.
+
+    Default operates on 'unmatched' files (no Spotify match found). Pass
+    status='review' to re-fingerprint files in the review queue, replacing
+    their stale tags with whatever AcoustID identifies — useful when the
+    review candidates look obviously wrong.
 
     Returns the per-outcome counts. Emits stage='deep_scan' progress events.
     Cancels cleanly on `state.cancel_event`. Aborts the whole run on the
-    first AcoustID auth/quota error (every other file would just hit the
-    same wall).
+    first AcoustID auth/quota error.
     """
     cur = await state.db_conn.execute(
-        "SELECT id, path, duration_ms FROM local_file WHERE status='unmatched' LIMIT ?",
-        (limit,),
+        "SELECT id, path, duration_ms FROM local_file WHERE status=? LIMIT ?",
+        (status, limit),
     )
     rows = await cur.fetchall()
     outcomes = {"matched": 0, "no_match": 0, "fpcalc_failed": 0}
     if not rows:
         await state.bus.publish(ProgressEvent(
             stage="deep_scan", processed=0, total=0,
-            message="no unmatched files to deep-scan",
+            message=f"no {status} files to deep-scan",
         ))
         return outcomes
     total = len(rows)
     processed = 0
     await state.bus.publish(ProgressEvent(
         stage="deep_scan", processed=0, total=total,
-        message=f"fingerprinting {total} files",
+        message=f"fingerprinting {total} {status} files",
     ))
     acoustid = AcoustidClient(api_key=state.settings.acoustid_api_key)
     try:
@@ -60,7 +66,7 @@ async def deep_scan_unmatched(state: "AppState", *, limit: int = 100000) -> dict
                 "SELECT status FROM local_file WHERE id=?", (fid,),
             )
             row2 = await cur2.fetchone()
-            if row2 is None or row2[0] != "unmatched":
+            if row2 is None or row2[0] != status:
                 processed += 1
                 continue
             fp = await fingerprint(Path(path_str))
@@ -112,23 +118,28 @@ async def deep_scan_unmatched(state: "AppState", *, limit: int = 100000) -> dict
 
 async def ai_scan_unmatched(
     state: "AppState", *, batch_size: int = 20, limit: int = 100000,
+    status: str = "unmatched",
 ) -> dict[str, int]:
-    """Run Claude metadata identification over every `status='unmatched'` file.
+    """Run Claude metadata identification over every file with `status=<status>`.
+
+    Default operates on 'unmatched'. Pass status='review' to ask Claude to
+    re-identify files in the review queue (replaces existing artist/title +
+    drops their stale candidates so the next match generates fresh ones).
 
     Returns by-confidence + updated counts. Emits stage='ai_scan' progress.
     Aborts the whole run on the first SDK exception (likely auth/quota).
     """
     cur = await state.db_conn.execute(
         """SELECT id, path, artist, title, album FROM local_file
-           WHERE status='unmatched' LIMIT ?""",
-        (limit,),
+           WHERE status=? LIMIT ?""",
+        (status, limit),
     )
     rows = await cur.fetchall()
     by_confidence: dict[str, int] = {"high": 0, "medium": 0, "low": 0, "none": 0}
     if not rows:
         await state.bus.publish(ProgressEvent(
             stage="ai_scan", processed=0, total=0,
-            message="no unmatched files for AI scan",
+            message=f"no {status} files for AI scan",
         ))
         return {"updated": 0, **by_confidence}
     files = [
@@ -140,7 +151,7 @@ async def ai_scan_unmatched(
     processed = 0
     await state.bus.publish(ProgressEvent(
         stage="ai_scan", processed=0, total=total,
-        message=f"sending {total} files to Claude in batches of {batch_size}",
+        message=f"sending {total} {status} files to Claude in batches of {batch_size}",
     ))
     ai = AIClient()
     try:
@@ -156,8 +167,8 @@ async def ai_scan_unmatched(
             placeholders = ",".join("?" * len(ids))
             cur2 = await state.db_conn.execute(
                 f"SELECT id FROM local_file "
-                f"WHERE id IN ({placeholders}) AND status='unmatched'",
-                ids,
+                f"WHERE id IN ({placeholders}) AND status=?",
+                (*ids, status),
             )
             still_unmatched = {r[0] for r in await cur2.fetchall()}
             skipped = len(batch) - len(still_unmatched)
