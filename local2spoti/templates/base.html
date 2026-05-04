@@ -21,12 +21,24 @@
   </header>
   <main class="max-w-6xl mx-auto p-6">{% block content %}{% endblock %}</main>
 
+  <!-- WebSocket status badge — fades in only when the connection is
+       degraded so it stays out of the way during normal use. Without this
+       you don't know whether the server is up; FF tabs that lose the WS
+       silently start to drift. -->
+  <div id="ws-badge" class="fixed top-2 right-2 z-50 text-xs font-mono px-2 py-1 rounded bg-zinc-900/90 border opacity-0 pointer-events-none transition-opacity duration-200"></div>
+
   <div id="toasts" class="fixed bottom-4 right-4 z-50 space-y-2 max-w-md pointer-events-none"></div>
   <script>
-    // Global toast: pops up bottom-right for any HTMX request that returns
-    // JSON (i.e. our /api/* endpoints). HTML responses are normal page swaps
-    // so we don't toast on those.
+    // Cap visible toasts so a reconnect storm (e.g. server restarting while
+    // many in-flight HTMX requests time out) can't pile up unbounded DOM
+    // and starve FF.
+    var MAX_TOASTS = 5;
+
     function showToast(text, type) {
+      var container = document.getElementById("toasts");
+      while (container.children.length >= MAX_TOASTS) {
+        container.removeChild(container.firstChild);
+      }
       var el = document.createElement("div");
       var cls = type === "error"
         ? "bg-red-700 border-red-500"
@@ -35,12 +47,40 @@
           : "bg-emerald-800 border-emerald-600";
       el.className = cls + " border px-4 py-2 rounded shadow text-sm text-zinc-100 pointer-events-auto transition-opacity duration-300";
       el.textContent = text;
-      document.getElementById("toasts").appendChild(el);
+      container.appendChild(el);
       setTimeout(function () {
         el.style.opacity = "0";
         setTimeout(function () { el.remove(); }, 320);
       }, 4500);
     }
+
+    // ─── WebSocket health indicator ────────────────────────────────────
+    // htmx-ws auto-reconnects with backoff. We surface its state visually
+    // so the user (and the dev) can see why progress bars stopped updating
+    // — saves "is it broken or just reconnecting" guessing during
+    // server restarts.
+    (function () {
+      var badge = document.getElementById("ws-badge");
+      function setBadge(text, color, visible) {
+        if (!badge) return;
+        badge.textContent = text;
+        badge.className = "fixed top-2 right-2 z-50 text-xs font-mono px-2 py-1 rounded bg-zinc-900/90 border pointer-events-none transition-opacity duration-200 " + color;
+        badge.style.opacity = visible ? "1" : "0";
+      }
+      document.body.addEventListener("htmx:wsConnecting", function () {
+        setBadge("● Reconnecting WebSocket…", "border-amber-500 text-amber-400", true);
+      });
+      document.body.addEventListener("htmx:wsOpen", function () {
+        setBadge("● WebSocket connected", "border-emerald-500 text-emerald-400", true);
+        setTimeout(function () { setBadge("", "", false); }, 1500);
+      });
+      document.body.addEventListener("htmx:wsClose", function () {
+        setBadge("● WebSocket disconnected — retrying…", "border-red-500 text-red-400", true);
+      });
+      document.body.addEventListener("htmx:wsError", function () {
+        setBadge("● WebSocket error — retrying…", "border-red-500 text-red-400", true);
+      });
+    })();
 
     function _summarize(data) {
       if (!data || typeof data !== "object") return "OK";
