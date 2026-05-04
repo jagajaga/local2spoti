@@ -4,13 +4,36 @@
 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
   <section class="bg-zinc-900 rounded-lg p-5">
     <h2 class="text-lg font-semibold mb-3">Library</h2>
-    <form hx-post="/api/library" hx-swap="none" class="space-y-2">
-      <input type="text" name="path" value="{{ library_root or '' }}"
-             placeholder="/path/to/your/music"
-             class="w-full bg-zinc-800 px-3 py-2 rounded text-sm">
-      <button class="px-3 py-1 bg-zinc-700 rounded text-sm">Save</button>
+    <form id="library-form" hx-post="/api/library" hx-swap="none" class="space-y-2">
+      <div class="flex gap-2">
+        <input id="library-path-input" type="text" name="path" value="{{ library_root or '' }}"
+               placeholder="/path/to/your/music"
+               class="flex-1 bg-zinc-800 px-3 py-2 rounded text-sm font-mono">
+        <button type="button"
+                hx-get="/api/browse{% if library_root %}?path={{ library_root }}{% endif %}"
+                hx-target="#browser-body" hx-swap="innerHTML"
+                onclick="document.getElementById('browser-panel').classList.remove('hidden')"
+                class="px-3 py-2 bg-zinc-700 rounded text-sm">Browse…</button>
+        <button type="submit" class="px-3 py-2 bg-emerald-700 rounded text-sm">Save</button>
+      </div>
     </form>
-    <p class="text-sm text-zinc-400 mt-2">Files in DB: {{ total_files }}</p>
+    <div id="browser-panel" class="hidden mt-3 bg-zinc-900 border border-zinc-700 rounded p-3">
+      <div id="browser-body" class="text-zinc-100"></div>
+      <div class="flex justify-end gap-2 mt-3">
+        <button type="button"
+                onclick="document.getElementById('browser-panel').classList.add('hidden')"
+                class="px-3 py-1 bg-zinc-700 rounded text-xs">Cancel</button>
+        <button type="button"
+                onclick="
+                  var p = document.getElementById('browser-current-path').value;
+                  document.getElementById('library-path-input').value = p;
+                  document.getElementById('browser-panel').classList.add('hidden');
+                  htmx.trigger('#library-form', 'submit');
+                "
+                class="px-3 py-1 bg-emerald-600 rounded text-xs">Select this folder</button>
+      </div>
+    </div>
+    <p class="text-sm text-zinc-400 mt-3">Files in DB: {{ total_files }}</p>
     <p class="text-sm text-zinc-400">Last scan: {{ last_scan_at or "never" }}</p>
   </section>
   <section class="bg-zinc-900 rounded-lg p-5">

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from .. import repo
 from ..acoustid import AcoustidClient, fingerprint, fpcalc_available
@@ -86,6 +87,62 @@ async def set_library(request: Request, path: str = Form(...)) -> JSONResponse:
     )
     await state.db_conn.commit()
     return JSONResponse({"library_root": str(p)})
+
+
+@router.get("/browse", response_class=HTMLResponse)
+async def browse(request: Request, path: str | None = None) -> HTMLResponse:
+    """Render an HTMX fragment listing subdirectories of `path`.
+
+    Defaults to the user's home dir. Hidden entries (starting with '.') are
+    skipped. Returns HTML so HTMX can swap it directly into the page.
+    """
+    base = Path(path).expanduser() if path else Path.home()
+    try:
+        base = base.resolve()
+    except OSError:
+        return HTMLResponse(f'<div class="text-red-400 text-sm">invalid path: {path}</div>')
+    if not base.is_dir():
+        return HTMLResponse(
+            f'<div class="text-red-400 text-sm">not a directory: {base}</div>'
+        )
+
+    entries: list[dict] = []
+    try:
+        for entry in os.scandir(base):
+            if entry.name.startswith("."):
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                entries.append({"name": entry.name, "path": str(base / entry.name)})
+    except PermissionError:
+        return HTMLResponse(
+            f'<div class="text-red-400 text-sm">permission denied: {base}</div>'
+        )
+    entries.sort(key=lambda e: e["name"].lower())
+
+    parent = str(base.parent) if base.parent != base else None
+    rows = []
+    if parent is not None:
+        rows.append(
+            f'<button type="button" class="w-full text-left px-2 py-1 hover:bg-zinc-800 rounded text-sm" '
+            f'hx-get="/api/browse?path={parent}" hx-target="#browser-body" hx-swap="innerHTML">'
+            f'<span class="text-zinc-500">↑</span> ..</button>'
+        )
+    for e in entries:
+        rows.append(
+            f'<button type="button" class="w-full text-left px-2 py-1 hover:bg-zinc-800 rounded text-sm truncate" '
+            f'hx-get="/api/browse?path={e["path"]}" hx-target="#browser-body" hx-swap="innerHTML">'
+            f'<span class="text-amber-400">📁</span> {e["name"]}</button>'
+        )
+    if not entries:
+        rows.append('<div class="text-zinc-500 text-xs px-2 py-1">(no subfolders)</div>')
+
+    body = "".join(rows)
+    return HTMLResponse(
+        f'<div class="text-xs text-zinc-400 mb-2 break-all">'
+        f'<span class="font-mono">{base}</span></div>'
+        f'<div class="max-h-64 overflow-y-auto bg-zinc-950 rounded p-1">{body}</div>'
+        f'<input type="hidden" id="browser-current-path" value="{base}">'
+    )
 
 
 @router.post("/scan/start")
