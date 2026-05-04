@@ -31,3 +31,24 @@ def test_unicode_filename():
     a, t, _ = parse_filename("Björk - Hyperballad.flac", parents=())
     assert a == "Björk"
     assert t == "Hyperballad"
+
+
+import pytest
+from local2spoti.scanner import read_tags, ParsedMetadata
+
+
+def test_read_tags_mp3(make_mp3):
+    p = make_mp3("track.mp3")
+    md = read_tags(p)
+    assert md.artist == "Daft Punk"
+    assert md.title == "Around the World"
+    assert md.album == "Homework"
+    assert md.duration_ms is not None and md.duration_ms > 0
+
+
+def test_read_tags_missing_returns_none_fields(tmp_path):
+    p = tmp_path / "empty.mp3"
+    p.write_bytes(b"\x00" * 16)  # not a real mp3
+    md = read_tags(p)
+    assert md.artist is None
+    assert md.title is None
