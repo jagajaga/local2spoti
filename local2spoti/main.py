@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -77,6 +77,24 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     app = FastAPI(title="Local2Spoti", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def _no_cache_html(request: Request, call_next):
+        """Stop browsers from holding stale HTML.
+
+        We rev the templates often (button wiring, HTMX attributes, etc.)
+        and a cached page from yesterday will silently break interactions
+        like Deep scan / AI scan because the cached HTML lacks the
+        `hx-post` attributes that intercept the click. Forcing a fresh
+        fetch on every navigation costs nothing on localhost and prevents
+        a class of confusing bugs.
+        """
+        response = await call_next(request)
+        ct = response.headers.get("content-type", "")
+        if ct.startswith("text/html"):
+            response.headers["Cache-Control"] = "no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+        return response
 
     static = _static_dir()
     if static.exists():
