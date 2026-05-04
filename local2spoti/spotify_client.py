@@ -72,12 +72,27 @@ class SpotifyClient:
         while True:
             await self._bucket.acquire()
             content = orjson.dumps(json) if json is not None else None
-            r = await self._http.request(
-                method, path,
-                params=params,
-                content=content,
-                headers={"Content-Type": "application/json"} if json is not None else None,
-            )
+            try:
+                r = await self._http.request(
+                    method, path,
+                    params=params,
+                    content=content,
+                    headers={"Content-Type": "application/json"} if json is not None else None,
+                )
+            except (
+                httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError,
+            ):
+                # Network blip — DNS hiccup, captive portal, brief WiFi
+                # drop, Spotify took too long to answer. Definitionally
+                # transient. Pause briefly and retry forever; the user's
+                # only escape hatch is the Stop button (cancel_event in
+                # the pipeline). Without this, an httpx.ConnectError
+                # would propagate up to process_artist and that group's
+                # files would get marked as error — but it's not the
+                # files' fault and the next /scan run would just hit
+                # the same wall.
+                self._bucket.pause_for(15.0)
+                continue
             # Treat both 429 and "Spotify is unavailable in this country"
             # 403s as soft rate-limit signals. Empirically, Spotify
             # escalates from 429 → 403-geoblock when our IP keeps hitting

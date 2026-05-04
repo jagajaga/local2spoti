@@ -131,3 +131,19 @@ def test_soft_rate_limit_403_helper_recognizes_known_messages():
     assert not _is_soft_rate_limit_403(_mk(403, '{"error":{"message":"insufficient scope"}}'))
     assert not _is_soft_rate_limit_403(_mk(401, '{"error":"unauthorized"}'))
     assert not _is_soft_rate_limit_403(_mk(200, '{}'))
+
+
+@respx.mock
+async def test_connection_error_retried_until_success(client):
+    """Network blips (ConnectError, TimeoutException, etc.) are NOT a
+    file-level failure — pause briefly and retry, like a 429."""
+    route = respx.get("https://api.spotify.com/v1/search").mock(
+        side_effect=[
+            httpx.ConnectError("All connection attempts failed"),
+            httpx.ReadTimeout("read timed out"),
+            httpx.Response(200, json={"tracks": {"items": []}}),
+        ]
+    )
+    items = await client.search_tracks("a", "b")
+    assert items == []
+    assert route.call_count == 3  # both transient errors retried, third succeeded
