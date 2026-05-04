@@ -65,9 +65,11 @@
       </a>
     </div>
   </section>
-  <section class="bg-zinc-900 rounded-lg p-5 md:col-span-2">
-    <h2 class="text-lg font-semibold mb-3">Threshold</h2>
-    <form hx-post="/api/threshold" hx-trigger="change" class="flex gap-4">
+  <section class="bg-zinc-900 rounded-lg p-5 md:col-span-2"
+           hx-ext="ws" ws-connect="/ws/progress">
+    <h2 class="text-lg font-semibold mb-3">Scan</h2>
+
+    <form hx-post="/api/threshold" hx-trigger="change" hx-swap="none" class="flex gap-4 text-sm mb-4">
       {% for t in ["strict", "balanced", "loose"] %}
       <label class="flex items-center gap-2">
         <input type="radio" name="threshold" value="{{ t }}" {% if threshold == t %}checked{% endif %}>
@@ -75,11 +77,83 @@
       </label>
       {% endfor %}
     </form>
-    <form action="/api/scan/start" method="post" class="mt-4">
-      <button class="px-4 py-2 bg-blue-600 rounded" {% if not spotify_user %}disabled{% endif %}>
+
+    <div class="flex gap-2 items-center mb-3">
+      <button type="button"
+              hx-post="/api/scan/start"
+              hx-target="#scan-status"
+              hx-swap="innerHTML"
+              class="px-4 py-2 bg-blue-600 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+              {% if not spotify_user %}disabled title="Connect Spotify first"{% endif %}>
         Start scan
       </button>
-    </form>
+      <button type="button"
+              hx-post="/api/scan/cancel"
+              hx-target="#scan-status"
+              hx-swap="innerHTML"
+              class="px-4 py-2 bg-red-700 rounded">
+        Cancel
+      </button>
+      <span id="scan-status" class="text-xs text-zinc-400 ml-2"></span>
+    </div>
+
+    <div class="space-y-2">
+      <div id="scan-stage" class="text-sm text-zinc-400">Idle</div>
+      <div class="h-3 bg-zinc-800 rounded overflow-hidden">
+        <div id="scan-bar" class="h-full bg-emerald-600 transition-all duration-200" style="width:0%"></div>
+      </div>
+      <div class="grid grid-cols-4 gap-2 text-center text-sm pt-2">
+        <div class="bg-zinc-800 rounded p-2">
+          <div id="sc-matched" class="text-lg">{{ counts.matched or 0 }}</div>
+          <div class="text-xs text-zinc-500">matched</div>
+        </div>
+        <div class="bg-zinc-800 rounded p-2">
+          <div id="sc-review" class="text-lg">{{ counts.review or 0 }}</div>
+          <div class="text-xs text-zinc-500">review</div>
+        </div>
+        <div class="bg-zinc-800 rounded p-2">
+          <div id="sc-unmatched" class="text-lg">{{ counts.unmatched or 0 }}</div>
+          <div class="text-xs text-zinc-500">unmatched</div>
+        </div>
+        <div class="bg-zinc-800 rounded p-2">
+          <div id="sc-errors" class="text-lg">{{ counts.error or 0 }}</div>
+          <div class="text-xs text-zinc-500">errors</div>
+        </div>
+      </div>
+    </div>
   </section>
+
+  <script>
+    (function () {
+      function setText(id, val) {
+        var el = document.getElementById(id);
+        if (el && val !== undefined) el.textContent = val;
+      }
+      document.body.addEventListener("htmx:wsAfterMessage", function (evt) {
+        var e;
+        try { e = JSON.parse(evt.detail.message); } catch (_) { return; }
+        if (typeof e.stage === "undefined") return;
+        setText("scan-stage", e.stage + ": " + e.processed + " / " + e.total
+                + (e.message ? "  —  " + e.message : ""));
+        if (e.total > 0) {
+          var pct = Math.round(100 * e.processed / e.total);
+          document.getElementById("scan-bar").style.width = pct + "%";
+        }
+        setText("sc-matched", e.matched);
+        setText("sc-review", e.review);
+        setText("sc-unmatched", e.unmatched);
+        setText("sc-errors", e.errors);
+      });
+      // Auto-clear scan-status banner after 4s
+      document.body.addEventListener("htmx:afterSwap", function (evt) {
+        if (evt.detail.target && evt.detail.target.id === "scan-status") {
+          setTimeout(function () {
+            var el = document.getElementById("scan-status");
+            if (el) el.innerHTML = "";
+          }, 4000);
+        }
+      });
+    })();
+  </script>
 </div>
 {% endblock %}
