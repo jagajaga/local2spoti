@@ -293,6 +293,47 @@ async def scan_start(request: Request) -> JSONResponse:
     })
 
 
+@router.post("/retry_errors")
+async def retry_errors(request: Request) -> JSONResponse:
+    """Move every status='error' file back to 'scanned' so the next match
+    can retry them. Clears last_error and any stale match_candidate rows.
+
+    Most common reason files end up in 'error': Spotify's /search endpoint
+    soft-blocks our IP after a burst of requests and 403s for a while.
+    Files marked as failed during the block can be retried once Spotify
+    lifts it (usually a few hours later, with the slower rate limiter).
+    """
+    state = request.app.state.app_state
+    if state.any_job_running():
+        return JSONResponse(
+            {"error": "another job is running — stop it first"},
+            status_code=409,
+        )
+    cur = await state.db_conn.execute(
+        "SELECT id FROM local_file WHERE status='error'"
+    )
+    ids = [r[0] for r in await cur.fetchall()]
+    if not ids:
+        return JSONResponse({"ok": True, "retried": 0,
+                             "message": "no files in error status"})
+    # Clear stale candidates and reset to scanned in a single transaction.
+    placeholders = ",".join("?" * len(ids))
+    await state.db_conn.execute(
+        f"DELETE FROM match_candidate WHERE local_file_id IN ({placeholders})",
+        ids,
+    )
+    await state.db_conn.execute(
+        f"""UPDATE local_file SET status='scanned', last_error=NULL
+            WHERE id IN ({placeholders})""",
+        ids,
+    )
+    await state.db_conn.commit()
+    return JSONResponse(
+        {"ok": True, "retried": len(ids),
+         "message": f"Reset {len(ids)} error files → scanned. Click Match to retry."}
+    )
+
+
 @router.post("/match")
 async def match_only(request: Request) -> JSONResponse:
     """Run JUST the Spotify match stage on every status='scanned' file.

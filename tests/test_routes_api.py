@@ -207,3 +207,55 @@ async def test_deep_scan_status_review_only_processes_review_files(tmp_path, mon
     # First emitted event should mention 1 file (only the review one)
     fingerprinting_msgs = [e for e in captured if "fingerprint" in (e.message or "")]
     assert any("1 review files" in (e.message or "") for e in fingerprinting_msgs)
+
+
+async def test_retry_errors_resets_files_and_clears_candidates(tmp_path, monkeypatch):
+    """Reset files in error status back to scanned + drop their candidates."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    db = tmp_path / ".local2spoti" / "state.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    async with connect(db) as conn:
+        await init_schema(conn)
+        now = datetime(2026, 5, 4, tzinfo=UTC)
+        # 2 error files (with stale candidates) + 1 unrelated matched file
+        await repo.upsert_local_file(conn, LocalFile(
+            path="/e1.mp3", mtime=1, size=1, format="mp3",
+            artist="A", title="T1", status=FileStatus.ERROR,
+            last_error="403 GET /search",
+        ), now=now)
+        await repo.upsert_local_file(conn, LocalFile(
+            path="/e2.mp3", mtime=1, size=1, format="mp3",
+            artist="A", title="T2", status=FileStatus.ERROR,
+            last_error="connection failed",
+        ), now=now)
+        await repo.upsert_local_file(conn, LocalFile(
+            path="/m.mp3", mtime=1, size=1, format="mp3",
+            artist="X", title="Y", status=FileStatus.MATCHED,
+        ), now=now)
+        # Stale candidate on one of the error files
+        cur = await conn.execute("SELECT id FROM local_file WHERE path='/e1.mp3'")
+        (e1_id,) = await cur.fetchone()
+        await repo.insert_candidates(conn, e1_id, [
+            MatchCandidate(spotify_track_id="t", spotify_artist="X",
+                           spotify_title="Y", artist_similarity=0.5,
+                           title_similarity=0.5, confidence=0.5, rank=1),
+        ], now=now)
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            r = await c.post("/api/retry_errors")
+    assert r.status_code == 200
+    assert r.json()["retried"] == 2
+
+    async with connect(db) as conn:
+        cur = await conn.execute(
+            "SELECT path, status, last_error FROM local_file ORDER BY path"
+        )
+        rows = {r[0]: (r[1], r[2]) for r in await cur.fetchall()}
+        cur = await conn.execute("SELECT COUNT(*) FROM match_candidate")
+        candidate_count = (await cur.fetchone())[0]
+    assert rows["/e1.mp3"] == ("scanned", None)
+    assert rows["/e2.mp3"] == ("scanned", None)
+    assert rows["/m.mp3"] == ("matched", None)  # untouched
+    assert candidate_count == 0  # stale candidate cleared

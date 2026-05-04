@@ -102,6 +102,19 @@
       Click <em>Start scan</em> below — it'll process them (and auto-rescue any unmatched via AcoustID + Claude).
     </p>
     {% endif %}
+    {% if counts.error and counts.error > 0 %}
+    <div class="mt-3 p-3 bg-red-900/20 border border-red-700/40 rounded text-xs text-zinc-300">
+      ⚠ <strong>{{ counts.error }}</strong> files marked as error.
+      Most common cause: Spotify temporarily 403s the <code>/search</code> endpoint after a burst of requests.
+      Once Spotify lifts the block (typically a few hours), click
+      <button hx-post="/api/retry_errors" hx-target="#scan-status" hx-swap="innerHTML"
+              hx-confirm="Move all {{ counts.error }} error files back to 'scanned' so the next Match retries them?"
+              class="px-2 py-0.5 bg-red-700 hover:bg-red-600 rounded text-zinc-100 mx-1">
+        Retry errors
+      </button>
+      and then <em>Match</em> to re-run them.
+    </div>
+    {% endif %}
   </section>
   <section class="bg-zinc-900 rounded-lg p-5 md:col-span-2"
            hx-ext="ws" ws-connect="/ws/progress">
