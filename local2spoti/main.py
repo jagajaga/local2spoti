@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -16,6 +17,7 @@ from .routes.api import router as api_router, auth_router
 from .routes.ui import router as ui_router
 from .routes.ws import router as ws_router
 from .state import AppState
+from .token_refresh import refresh_loop
 
 try:
     import uvloop
@@ -52,7 +54,18 @@ async def lifespan(app: FastAPI):
                 state.settings.acoustid_api_key = v
         state.db_conn = conn
         app.state.app_state = state
-        yield
+
+        refresh_task = asyncio.create_task(
+            refresh_loop(conn=conn, client_id=settings.spotify_client_id)
+        )
+        try:
+            yield
+        finally:
+            refresh_task.cancel()
+            try:
+                await refresh_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 def create_app() -> FastAPI:
