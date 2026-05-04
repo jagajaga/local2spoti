@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from .. import repo
+from ..models import FileStatus
 
 router = APIRouter()
 
@@ -39,5 +40,31 @@ async def dashboard(request: Request) -> HTMLResponse:
             "spotify_user": user_row[0] if user_row else None,
             "counts": {k.value: v for k, v in counts.items()},
             "threshold": state.settings.threshold,
+        },
+    )
+
+
+@router.get("/files", response_class=HTMLResponse)
+async def files(
+    request: Request,
+    status: str = Query("matched"),
+    offset: int = 0,
+    limit: int = 100,
+) -> HTMLResponse:
+    state = request.app.state.app_state
+    try:
+        st = FileStatus(status)
+    except ValueError:
+        st = FileStatus.MATCHED
+    files = await repo.list_files_by_status(state.db_conn, st, limit=limit, offset=offset)
+    return _templates().TemplateResponse(
+        request,
+        "files.html",
+        {
+            "files": files,
+            "status": status,
+            "statuses": [s.value for s in FileStatus],
+            "offset": offset,
+            "limit": limit,
         },
     )

@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Files - Local2Spoti{% endblock %}
+{% block content %}
+<div class="mb-4 flex gap-2 text-sm">
+  {% for s in statuses %}
+  <a href="/files?status={{ s }}"
+     class="px-3 py-1 rounded {% if s == status %}bg-blue-600{% else %}bg-zinc-800 hover:bg-zinc-700{% endif %}">
+    {{ s }}
+  </a>
+  {% endfor %}
+</div>
+<table class="w-full text-sm border-collapse">
+  <thead class="text-left text-zinc-400 border-b border-zinc-800">
+    <tr>
+      <th class="py-2 pr-4">Artist</th>
+      <th class="pr-4">Title</th>
+      <th class="pr-4">Album</th>
+      <th class="pr-4">Format</th>
+      <th class="pr-4">Confidence</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for f in files %}
+    <tr class="border-b border-zinc-900">
+      <td class="py-1 pr-4">{{ f.artist or "—" }}</td>
+      <td class="pr-4">{{ f.title or "—" }}</td>
+      <td class="pr-4">{{ f.album or "" }}</td>
+      <td class="pr-4 uppercase text-zinc-500">{{ f.format }}</td>
+      <td class="pr-4">{% if f.match_confidence %}{{ "%.2f" | format(f.match_confidence) }}{% endif %}</td>
+      <td>
+        {% if f.spotify_track_id %}
+          <a class="text-emerald-400" href="https://open.spotify.com/track/{{ f.spotify_track_id }}" target="_blank">↗</a>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% if files | length == limit %}
+<button hx-get="/files?status={{ status }}&offset={{ offset + limit }}"
+        hx-target="closest tbody" hx-swap="beforeend"
+        class="mt-4 px-3 py-1 bg-zinc-800 rounded">Load more</button>
+{% endif %}
+{% endblock %}
