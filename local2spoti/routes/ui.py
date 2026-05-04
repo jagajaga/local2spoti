@@ -68,10 +68,10 @@ async def files(
 
 
 @router.get("/review", response_class=HTMLResponse)
-async def review(request: Request, offset: int = 0, limit: int = 50) -> HTMLResponse:
+async def review(request: Request, limit: int = 100000) -> HTMLResponse:
     state = request.app.state.app_state
     files = await repo.list_files_by_status(state.db_conn, FileStatus.REVIEW,
-                                             limit=limit, offset=offset)
+                                             limit=limit, offset=0)
     cards = []
     for f in files:
         cur = await state.db_conn.execute(
@@ -87,8 +87,7 @@ async def review(request: Request, offset: int = 0, limit: int = 50) -> HTMLResp
         ]
         cards.append({"file": f, "candidates": candidates})
     return _templates().TemplateResponse(
-        request, "review.html",
-        {"cards": cards, "offset": offset, "limit": limit},
+        request, "review.html", {"cards": cards},
     )
 
 
@@ -98,12 +97,12 @@ async def scan(request: Request) -> HTMLResponse:
 
 
 @router.get("/unmatched", response_class=HTMLResponse)
-async def unmatched(request: Request, offset: int = 0, limit: int = 100) -> HTMLResponse:
+async def unmatched(request: Request, limit: int = 100000) -> HTMLResponse:
     state = request.app.state.app_state
     files = await repo.list_files_by_status(state.db_conn, FileStatus.UNMATCHED,
-                                             limit=limit, offset=offset)
+                                             limit=limit, offset=0)
     return _templates().TemplateResponse(
         request, "files.html",
         {"files": files, "status": "unmatched",
-         "statuses": [s.value for s in FileStatus], "offset": offset, "limit": limit},
+         "statuses": [s.value for s in FileStatus]},
     )

@@ -61,6 +61,38 @@ async def approve_top_visible(request: Request) -> JSONResponse:
     return JSONResponse({"approved": len(rows)})
 
 
+@router.post("/review/approve_above_confidence")
+async def approve_above_confidence(
+    request: Request, threshold: float = Form(...),
+) -> JSONResponse:
+    """Bulk-approve every review-queue file whose top candidate's confidence
+    is at or above `threshold` (0.0–1.0). Hits the entire queue, not just
+    the visible page.
+    """
+    if not 0.0 <= threshold <= 1.0:
+        return JSONResponse(
+            {"error": "threshold must be between 0.0 and 1.0"}, status_code=400,
+        )
+    state = request.app.state.app_state
+    cur = await state.db_conn.execute(
+        """SELECT mc.local_file_id, mc.spotify_track_id, mc.confidence
+           FROM match_candidate mc
+           JOIN local_file lf ON lf.id = mc.local_file_id
+           WHERE mc.rank = 1 AND lf.status = 'review' AND mc.confidence >= ?""",
+        (threshold,),
+    )
+    rows = await cur.fetchall()
+    for fid, track_id, conf in rows:
+        await repo.update_match(
+            state.db_conn, fid, spotify_track_id=track_id,
+            confidence=conf, method="manual",
+        )
+    return JSONResponse(
+        {"approved": len(rows), "threshold": threshold,
+         "message": f"Approved {len(rows)} files with confidence ≥ {int(threshold * 100)}%"}
+    )
+
+
 @router.post("/threshold")
 async def set_threshold(request: Request, threshold: str = Form(...)) -> JSONResponse:
     if threshold not in ("strict", "balanced", "loose"):

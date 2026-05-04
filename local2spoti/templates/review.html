@@ -1,15 +1,47 @@
 {% extends "base.html" %}
 {% block title %}Review - Local2Spoti{% endblock %}
 {% block content %}
-<div class="mb-4 flex gap-2">
-  <button id="bulk-approve"
-          hx-post="/api/review/approve_top_visible"
-          hx-include="#review-grid input[name='file_ids']"
-          hx-swap="none"
-          class="px-3 py-2 bg-emerald-600 rounded">
-    Approve top candidate for all visible
-  </button>
+<div class="mb-4 p-4 bg-zinc-900 rounded space-y-3">
+  <div class="flex items-center justify-between text-sm">
+    <span class="text-zinc-300 font-semibold">Bulk approve by confidence</span>
+    <span class="text-zinc-400">{{ cards | length }} files in review</span>
+  </div>
+  <form id="bulk-by-conf"
+        hx-post="/api/review/approve_above_confidence"
+        hx-target="#bulk-status" hx-swap="innerHTML"
+        hx-confirm="Approve every file with confidence ≥ the selected threshold?"
+        class="flex flex-wrap items-center gap-3">
+    <label class="flex items-center gap-2 grow min-w-64">
+      <span class="text-xs text-zinc-400 shrink-0">≥</span>
+      <input type="range" name="threshold_pct" min="50" max="100" value="85" step="1"
+             oninput="document.getElementById('thr-pct').textContent = this.value + '%'; document.getElementById('thr-hidden').value = (this.value / 100).toFixed(2);"
+             class="flex-1 accent-emerald-500">
+      <span id="thr-pct" class="text-sm text-emerald-400 font-mono w-12 text-right">85%</span>
+    </label>
+    <input type="hidden" name="threshold" id="thr-hidden" value="0.85">
+    <button class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded text-sm">
+      Approve all ≥ <span id="thr-btn">85%</span>
+    </button>
+  </form>
+  <span id="bulk-status" class="text-xs text-zinc-300 font-mono block min-h-4"></span>
+  <div class="flex gap-2 pt-1">
+    <button id="bulk-approve"
+            hx-post="/api/review/approve_top_visible"
+            hx-include="#review-grid input[name='file_ids']"
+            hx-target="#bulk-status" hx-swap="innerHTML"
+            class="px-3 py-2 bg-zinc-700 hover:bg-zinc-600 rounded text-sm">
+      Approve every visible file (top candidate)
+    </button>
+  </div>
 </div>
+<script>
+  // Keep the button label in sync with the slider value
+  document.body.addEventListener("input", (e) => {
+    if (e.target?.name === "threshold_pct") {
+      document.getElementById("thr-btn").textContent = e.target.value + "%";
+    }
+  });
+</script>
 <form id="review-grid" class="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
   {% for card in cards %}
   <div class="bg-zinc-900 rounded-lg p-4 space-y-3" id="card-{{ card.file.id }}">
