@@ -4,6 +4,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 import mutagen
 
@@ -85,3 +86,25 @@ def read_tags(path: Path) -> ParsedMetadata:
         track_number=_parse_track_no(tags.get("tracknumber")),
         duration_ms=duration_ms,
     )
+
+
+def walk_audio_files(root: Path) -> Iterator[tuple[Path, tuple[str, ...]]]:
+    """Yield (file_path, parent_folders) tuples for all audio files under root.
+
+    `parent_folders` is ordered from immediate parent outward, used by parse_filename.
+    Uses os.scandir for speed at large library sizes.
+    """
+    def _walk(d: Path, parents: tuple[str, ...]) -> Iterator[tuple[Path, tuple[str, ...]]]:
+        try:
+            entries = list(os.scandir(d))
+        except OSError:
+            return
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                yield from _walk(Path(entry.path), (entry.name, *parents))
+            else:
+                ext = os.path.splitext(entry.name)[1].lower()
+                if ext in AUDIO_EXTS:
+                    yield Path(entry.path), parents
+
+    yield from _walk(root, ())

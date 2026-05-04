@@ -52,3 +52,25 @@ def test_read_tags_missing_returns_none_fields(tmp_path):
     md = read_tags(p)
     assert md.artist is None
     assert md.title is None
+
+
+from local2spoti.scanner import walk_audio_files
+
+
+def test_walk_finds_audio_files(tmp_path):
+    (tmp_path / "Daft Punk").mkdir()
+    (tmp_path / "Daft Punk" / "01 - Track.mp3").touch()
+    (tmp_path / "Daft Punk" / "02 - Track.flac").touch()
+    (tmp_path / "Daft Punk" / "cover.jpg").touch()
+    (tmp_path / "notes.txt").touch()
+
+    out = sorted(p.name for p, _ in walk_audio_files(tmp_path))
+    assert out == ["01 - Track.mp3", "02 - Track.flac"]
+
+
+def test_walk_returns_parents(tmp_path):
+    (tmp_path / "A" / "B").mkdir(parents=True)
+    f = tmp_path / "A" / "B" / "song.mp3"
+    f.touch()
+    [(_, parents)] = list(walk_audio_files(tmp_path))
+    assert parents == ("B", "A")
