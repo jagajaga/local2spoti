@@ -259,3 +259,62 @@ async def test_retry_errors_resets_files_and_clears_candidates(tmp_path, monkeyp
     assert rows["/e2.mp3"] == ("scanned", None)
     assert rows["/m.mp3"] == ("matched", None)  # untouched
     assert candidate_count == 0  # stale candidate cleared
+
+
+async def test_retry_one_error_resets_single_file(tmp_path, monkeypatch):
+    """POST /api/retry_error/{id} resets just that file."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    db = tmp_path / ".local2spoti" / "state.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    async with connect(db) as conn:
+        await init_schema(conn)
+        now = datetime(2026, 5, 4, tzinfo=UTC)
+        await repo.upsert_local_file(conn, LocalFile(
+            path="/e1.mp3", mtime=1, size=1, format="mp3",
+            artist="A", title="T1", status=FileStatus.ERROR,
+        ), now=now)
+        await repo.upsert_local_file(conn, LocalFile(
+            path="/e2.mp3", mtime=1, size=1, format="mp3",
+            artist="A", title="T2", status=FileStatus.ERROR,
+        ), now=now)
+        # set_status is the path that actually persists last_error (matches
+        # how the pipeline records errors).
+        await conn.execute(
+            "UPDATE local_file SET last_error='boom' WHERE path IN ('/e1.mp3', '/e2.mp3')"
+        )
+        await conn.commit()
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            # retry just file id 1; file id 2 stays in error with its message
+            r = await c.post("/api/retry_error/1")
+    assert r.status_code == 200
+    async with connect(db) as conn:
+        cur = await conn.execute(
+            "SELECT path, status, last_error FROM local_file ORDER BY path"
+        )
+        rows = {r[0]: (r[1], r[2]) for r in await cur.fetchall()}
+    assert rows["/e1.mp3"] == ("scanned", None)
+    assert rows["/e2.mp3"] == ("error", "boom")
+
+
+async def test_retry_one_error_rejects_non_error_file(tmp_path, monkeypatch):
+    """Can't retry a file that isn't in error status — returns 400."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    db = tmp_path / ".local2spoti" / "state.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    async with connect(db) as conn:
+        await init_schema(conn)
+        now = datetime(2026, 5, 4, tzinfo=UTC)
+        await repo.upsert_local_file(conn, LocalFile(
+            path="/m.mp3", mtime=1, size=1, format="mp3",
+            artist="A", title="T", status=FileStatus.MATCHED,
+        ), now=now)
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            r = await c.post("/api/retry_error/1")
+    assert r.status_code == 400
+    assert "not in error status" in r.json()["error"]

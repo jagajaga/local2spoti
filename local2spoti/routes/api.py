@@ -311,6 +311,34 @@ async def clear_rate_limit_pause(request: Request) -> JSONResponse:
     })
 
 
+@router.post("/retry_error/{file_id}")
+async def retry_one_error(request: Request, file_id: int) -> JSONResponse:
+    """Move a single file from status='error' back to 'scanned' and drop
+    any stale candidates. Used by the per-row retry button on the
+    /files?status=error view."""
+    state = request.app.state.app_state
+    cur = await state.db_conn.execute(
+        "SELECT status FROM local_file WHERE id=?", (file_id,),
+    )
+    row = await cur.fetchone()
+    if row is None:
+        return JSONResponse({"error": "file not found"}, status_code=404)
+    if row[0] != "error":
+        return JSONResponse(
+            {"error": f"file is not in error status (currently {row[0]})"},
+            status_code=400,
+        )
+    await state.db_conn.execute(
+        "DELETE FROM match_candidate WHERE local_file_id=?", (file_id,),
+    )
+    await state.db_conn.execute(
+        "UPDATE local_file SET status='scanned', last_error=NULL WHERE id=?",
+        (file_id,),
+    )
+    await state.db_conn.commit()
+    return JSONResponse({"ok": True, "message": "Reset to scanned — click Match to retry"})
+
+
 @router.post("/retry_errors")
 async def retry_errors(request: Request) -> JSONResponse:
     """Move every status='error' file back to 'scanned' so the next match
