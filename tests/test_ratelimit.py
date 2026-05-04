@@ -33,3 +33,12 @@ async def test_set_pause_until_blocks():
     start = loop.time()
     await b.acquire()
     assert loop.time() - start >= 0.04
+
+
+async def test_pause_remaining_and_clear_pause():
+    b = TokenBucket(rate=10, capacity=5)
+    assert b.pause_remaining() == 0.0
+    b.pause_for(60)
+    assert b.pause_remaining() > 50  # roughly 60
+    b.clear_pause()
+    assert b.pause_remaining() == 0.0

@@ -50,3 +50,8 @@ class TokenBucket:
         remaining' instead of just 'stalled, who knows why'.
         """
         return max(0.0, self._pause_until - time.monotonic())
+
+    def clear_pause(self) -> None:
+        """Manually expire any active pause (e.g. when the user knows
+        Spotify has cooled off and wants to retry now)."""
+        self._pause_until = 0.0

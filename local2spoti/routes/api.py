@@ -293,6 +293,24 @@ async def scan_start(request: Request) -> JSONResponse:
     })
 
 
+@router.post("/clear_rate_limit_pause")
+async def clear_rate_limit_pause(request: Request) -> JSONResponse:
+    """Drop any active Spotify rate-limit pause on the token bucket.
+
+    Use when the bucket is parked from a stale 429 (e.g. an earlier run
+    received a multi-hour Retry-After) and you want to probe Spotify now
+    rather than wait it out. If they're still throttled, the next call
+    will just 429 again and pause for a fresh (capped at 5min) interval.
+    """
+    state = request.app.state.app_state
+    remaining = state.spotify_bucket.pause_remaining()
+    state.spotify_bucket.clear_pause()
+    return JSONResponse({
+        "ok": True,
+        "message": f"Cleared rate-limit pause (was {remaining:.0f}s remaining)",
+    })
+
+
 @router.post("/retry_errors")
 async def retry_errors(request: Request) -> JSONResponse:
     """Move every status='error' file back to 'scanned' so the next match

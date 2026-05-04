@@ -63,7 +63,15 @@ class SpotifyClient:
                 headers={"Content-Type": "application/json"} if json is not None else None,
             )
             if r.status_code == 429:
-                wait = float(r.headers.get("Retry-After", "1"))
+                # Spotify can return huge Retry-After values when seriously
+                # throttled — we've observed 60_000+ s (≈17h). Cap the
+                # local pause at 5 minutes. If they're still angry after
+                # 5 min we'll just take another 429 and pause again, but
+                # at worst that's one probe per 5 min instead of sitting
+                # idle for a full day. The pipeline-level heartbeat keeps
+                # showing the user what's happening.
+                raw_wait = float(r.headers.get("Retry-After", "1"))
+                wait = min(raw_wait, 300.0)
                 self._bucket.pause_for(wait)
                 continue
             if r.status_code >= 500 and attempt < 4:
