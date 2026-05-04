@@ -1,0 +1,56 @@
+[project]
+name = "local2spoti"
+version = "0.1.0"
+description = "Local audio library to Spotify playlist sync"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "uvloop>=0.21; sys_platform != 'win32'",
+    "aiosqlite>=0.20",
+    "httpx>=0.28",
+    "orjson>=3.10",
+    "mutagen>=1.47",
+    "rapidfuzz>=3.10",
+    "spotipy>=2.24",
+    "structlog>=24.4",
+    "jinja2>=3.1",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "tomli-w>=1.0",
+    "pyacoustid>=1.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+    "freezegun>=1.5",
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "playwright>=1.48",
+    "beautifulsoup4>=4.12",
+]
+
+[project.scripts]
+local2spoti = "local2spoti.main:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
+python_version = "3.13"
