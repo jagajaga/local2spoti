@@ -20,5 +20,75 @@
     </nav>
   </header>
   <main class="max-w-6xl mx-auto p-6">{% block content %}{% endblock %}</main>
+
+  <div id="toasts" class="fixed bottom-4 right-4 z-50 space-y-2 max-w-md pointer-events-none"></div>
+  <script>
+    // Global toast: pops up bottom-right for any HTMX request that returns
+    // JSON (i.e. our /api/* endpoints). HTML responses are normal page swaps
+    // so we don't toast on those.
+    function showToast(text, type) {
+      var el = document.createElement("div");
+      var cls = type === "error"
+        ? "bg-red-700 border-red-500"
+        : type === "info"
+          ? "bg-blue-800 border-blue-600"
+          : "bg-emerald-800 border-emerald-600";
+      el.className = cls + " border px-4 py-2 rounded shadow text-sm text-zinc-100 pointer-events-auto transition-opacity duration-300";
+      el.textContent = text;
+      document.getElementById("toasts").appendChild(el);
+      setTimeout(function () {
+        el.style.opacity = "0";
+        setTimeout(function () { el.remove(); }, 320);
+      }, 4500);
+    }
+
+    function _summarize(data) {
+      if (!data || typeof data !== "object") return "OK";
+      if (data.message) return data.message;
+      if (data.error) return data.error;
+      // Endpoint-specific friendly summaries
+      if (data.added !== undefined) return "Pushed " + data.added + " tracks (" + (data.playlists_created || 0) + " playlists)";
+      if (data.approved !== undefined) {
+        if (data.threshold !== undefined)
+          return "Approved " + data.approved + " files (≥ " + Math.round(data.threshold * 100) + "%)";
+        return "Approved " + data.approved + " files";
+      }
+      if (data.processed !== undefined) {
+        var by = data.by_confidence
+          ? " (" + Object.keys(data.by_confidence).map(function (k) { return k + ": " + data.by_confidence[k]; }).join(", ") + ")"
+          : "";
+        return "Processed " + data.processed + ", updated " + (data.updated || 0) + by;
+      }
+      if (data.updated !== undefined) return "Updated " + data.updated + " files";
+      if (data.library_root !== undefined) return "Library set to " + data.library_root;
+      if (data.threshold !== undefined) return "Threshold: " + data.threshold;
+      if (data.ok) return "OK";
+      return JSON.stringify(data);
+    }
+
+    document.body.addEventListener("htmx:afterRequest", function (evt) {
+      var xhr = evt.detail.xhr;
+      var failed = evt.detail.failed || xhr.status >= 400;
+      var ct = xhr.getResponseHeader("Content-Type") || "";
+      // Only toast on JSON. HTML responses are normal page replacements.
+      if (!ct.includes("json")) {
+        if (failed) showToast("Request failed (" + xhr.status + ")", "error");
+        return;
+      }
+      var data = null;
+      try { data = JSON.parse(xhr.responseText); } catch (_) {}
+      if (failed) {
+        var msg = (data && data.error) ? data.error : "Error " + xhr.status;
+        showToast(msg, "error");
+      } else {
+        showToast(_summarize(data), "success");
+      }
+    });
+
+    // Surface network failures (server crashed, port closed, etc.)
+    document.body.addEventListener("htmx:sendError", function () {
+      showToast("Network error — is the server still running?", "error");
+    });
+  </script>
 </body>
 </html>

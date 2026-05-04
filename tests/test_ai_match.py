@@ -102,7 +102,10 @@ def test_suggestion_usable_property():
 
 @respx.mock
 async def test_ai_scan_endpoint_happy_path(tmp_path, monkeypatch):
-    """End-to-end: seed unmatched files, hit /api/ai_scan, verify DB updated."""
+    """End-to-end: endpoint returns immediately (background task);
+    after the task completes, DB has the AI metadata."""
+    import asyncio
+
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     db = tmp_path / ".local2spoti" / "state.db"
@@ -129,15 +132,15 @@ async def test_ai_scan_endpoint_happy_path(tmp_path, monkeypatch):
     async with LifespanManager(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             r = await c.post("/api/ai_scan")
+            assert r.status_code == 200
+            assert r.json()["ok"] is True
+            assert "AI scan started" in r.json()["message"]
 
-    assert r.status_code == 200
-    data = r.json()
-    assert data["processed"] == 2
-    assert data["updated"] == 1  # only the high-confidence one
-    assert data["by_confidence"]["high"] == 1
-    assert data["by_confidence"]["none"] == 1
+            # Wait for the background task to complete.
+            task = app.state.app_state.scan_task
+            await asyncio.wait_for(task, timeout=5.0)
 
-    # Verify DB write: file 1 should be back to 'scanned' with AI metadata
+    # DB state after the task ran.
     async with connect(db) as conn:
         cur = await conn.execute(
             "SELECT artist, title, status, metadata_source FROM local_file WHERE id=1"

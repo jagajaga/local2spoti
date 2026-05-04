@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -126,33 +127,129 @@ async def _stage_match(
     total = len(rows)
     processed = 0
     sem = asyncio.Semaphore(12)
+    current_artists: set[str] = set()
+    heartbeat_stop = asyncio.Event()
 
     async def process_artist(_: str, files: list[LocalFile]) -> None:
         nonlocal processed
+        artist_label = files[0].artist or "(unknown)"
         async with sem:
-            results = await match_artist_group(
-                client=client, artist=files[0].artist or "", files=files,
-                threshold=threshold,
-            )
-            no_artist_files = [r.file for r in results if r.decision == "no_artist"]
-            if no_artist_files:
-                fallbacks = await match_per_track(
-                    client=client, files=no_artist_files, threshold=threshold,
+            current_artists.add(artist_label)
+            try:
+                results = await match_artist_group(
+                    client=client, artist=files[0].artist or "", files=files,
+                    threshold=threshold,
                 )
-                results = [r for r in results if r.decision != "no_artist"] + fallbacks
-            await _persist_matches(conn, results, now=now, counts=counts)
-            processed += len(files)
-            await bus.publish(ProgressEvent(
-                stage="match", processed=processed, total=total,
-                matched=counts["matched"], review=counts["review"], unmatched=counts["unmatched"],
-            ))
+                no_artist_files = [r.file for r in results if r.decision == "no_artist"]
+                if no_artist_files:
+                    fallbacks = await match_per_track(
+                        client=client, files=no_artist_files, threshold=threshold,
+                    )
+                    results = [r for r in results if r.decision != "no_artist"] + fallbacks
+                await _persist_matches(conn, results, now=now, counts=counts)
+                processed += len(files)
+                await bus.publish(ProgressEvent(
+                    stage="match", processed=processed, total=total,
+                    matched=counts["matched"], review=counts["review"],
+                    unmatched=counts["unmatched"],
+                    message=f"matched {artist_label}",
+                ))
+            finally:
+                current_artists.discard(artist_label)
 
-    await asyncio.gather(*[process_artist(a, fs) for a, fs in groups.items()])
+    # Heartbeat: emits every 5 sec with current activity + ETA, even when no
+    # match has completed (e.g. all 12 workers blocked on Spotify rate limit
+    # or one worker chewing through Beatles' deluxe-edition pagination). This
+    # is what lets the user tell "stalled and dead" from "alive, working".
+    heartbeat_task = asyncio.create_task(_match_heartbeat(
+        bus=bus, counts=counts, total=total,
+        get_processed=lambda: processed,
+        current_artists=current_artists,
+        stop=heartbeat_stop,
+    ))
+
+    try:
+        await asyncio.gather(*[process_artist(a, fs) for a, fs in groups.items()])
+    finally:
+        heartbeat_stop.set()
+        try:
+            await heartbeat_task
+        except Exception:
+            pass
+
     await bus.publish(ProgressEvent(
         stage="match", processed=total, total=total,
-        matched=counts["matched"], review=counts["review"], unmatched=counts["unmatched"],
+        matched=counts["matched"], review=counts["review"],
+        unmatched=counts["unmatched"],
+        message=f"done — {counts['matched']} auto-matched, "
+                f"{counts['review']} need review, {counts['unmatched']} unmatched",
     ))
     return counts
+
+
+async def _match_heartbeat(
+    *,
+    bus: EventBus,
+    counts: dict[str, int],
+    total: int,
+    get_processed,
+    current_artists: set[str],
+    stop: asyncio.Event,
+    interval: float = 5.0,
+) -> None:
+    """Fire a status event every `interval` seconds during the match stage.
+
+    Includes throughput and ETA so the user can tell whether things are
+    progressing slowly (rate-limited) vs. genuinely stuck.
+    """
+    last_processed = 0
+    last_time = time.monotonic()
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+            return  # stop was set
+        except asyncio.TimeoutError:
+            pass
+        processed = get_processed()
+        now = time.monotonic()
+        elapsed = now - last_time
+        delta = processed - last_processed
+        if delta > 0 and elapsed > 0:
+            rate = delta / elapsed
+            remaining = max(0, total - processed)
+            eta_sec = remaining / rate if rate > 0 else None
+            msg = (
+                f"~{rate:.1f}/s, ETA "
+                f"{_fmt_duration(eta_sec)}, "
+                f"{len(current_artists)} workers active"
+            )
+        else:
+            active = ", ".join(sorted(current_artists))[:80] or "—"
+            msg = (
+                f"alive but stalled (likely rate-limited), "
+                f"{len(current_artists)} workers waiting on: {active}"
+            )
+        await bus.publish(ProgressEvent(
+            stage="match", processed=processed, total=total,
+            matched=counts["matched"], review=counts["review"],
+            unmatched=counts["unmatched"],
+            message=msg,
+        ))
+        last_processed = processed
+        last_time = now
+
+
+def _fmt_duration(seconds: float | None) -> str:
+    if seconds is None or seconds < 0:
+        return "?"
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    if seconds < 3600:
+        m, s = divmod(int(seconds), 60)
+        return f"{m}m{s:02d}s"
+    h, rem = divmod(int(seconds), 3600)
+    m = rem // 60
+    return f"{h}h{m:02d}m"
 
 
 async def _persist_matches(

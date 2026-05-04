@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from .. import repo
 from ..acoustid import AcoustidClient, fingerprint, fpcalc_available
 from ..ai_match import AIClient
+from ..events import ProgressEvent
 from ..matcher import Threshold
 from ..models import FileStatus
 from ..pipeline import run_scan
@@ -264,55 +265,103 @@ async def push(request: Request) -> JSONResponse:
 
 
 @router.post("/deep_scan")
-async def deep_scan(request: Request) -> JSONResponse:
+async def deep_scan(request: Request, limit: int = 200) -> JSONResponse:
+    """Kick off an AcoustID deep scan as a background task.
+
+    Returns immediately so the UI doesn't block; progress events stream over
+    the WebSocket and surface in the dashboard's progress bar.
+    """
     state = request.app.state.app_state
     if not fpcalc_available():
         return JSONResponse({"error": "fpcalc not installed"}, status_code=400)
     if not state.settings.acoustid_api_key:
         return JSONResponse({"error": "acoustid_api_key not set"}, status_code=400)
+    if state.scan_task and not state.scan_task.done():
+        return JSONResponse(
+            {"error": "another job is running — stop it first"}, status_code=409,
+        )
 
     cur = await state.db_conn.execute(
-        "SELECT id, path, duration_ms FROM local_file WHERE status='unmatched' LIMIT 200"
+        "SELECT id, path, duration_ms FROM local_file WHERE status='unmatched' LIMIT ?",
+        (limit,),
     )
     rows = await cur.fetchall()
     if not rows:
-        return JSONResponse({"updated": 0})
+        return JSONResponse(
+            {"ok": True, "updated": 0, "message": "No unmatched files to deep-scan"}
+        )
+    total = len(rows)
 
-    acoustid = AcoustidClient(api_key=state.settings.acoustid_api_key)
-    updated = 0
-    try:
-        for fid, path_str, _dur_ms in rows:
-            fp = await fingerprint(Path(path_str))
-            if fp is None:
-                continue
-            dur, fingerprint_str = fp
-            md = await acoustid.lookup(fingerprint=fingerprint_str, duration=dur)
-            if md is None:
-                continue
-            await state.db_conn.execute(
-                """UPDATE local_file SET artist=?, title=?, status='scanned',
-                   metadata_source='acoustid' WHERE id=?""",
-                (md.artist, md.title, fid),
-            )
-            await state.db_conn.commit()
-            updated += 1
-    finally:
-        await acoustid.aclose()
-    return JSONResponse({"updated": updated})
+    async def _run() -> None:
+        acoustid = AcoustidClient(api_key=state.settings.acoustid_api_key)
+        updated = 0
+        processed = 0
+        await state.bus.publish(ProgressEvent(
+            stage="deep_scan", processed=0, total=total,
+            message=f"fingerprinting {total} files",
+        ))
+        try:
+            for fid, path_str, _dur_ms in rows:
+                if state.cancel_event.is_set():
+                    await state.bus.publish(ProgressEvent(
+                        stage="deep_scan", processed=processed, total=total,
+                        message="cancelled",
+                    ))
+                    return
+                fp = await fingerprint(Path(path_str))
+                if fp is not None:
+                    dur, fingerprint_str = fp
+                    md = await acoustid.lookup(
+                        fingerprint=fingerprint_str, duration=dur,
+                    )
+                    if md is not None:
+                        await state.db_conn.execute(
+                            """UPDATE local_file SET artist=?, title=?, status='scanned',
+                               metadata_source='acoustid' WHERE id=?""",
+                            (md.artist, md.title, fid),
+                        )
+                        await state.db_conn.commit()
+                        updated += 1
+                processed += 1
+                # Coalesced at the bus's min_interval (100ms by default).
+                await state.bus.publish(ProgressEvent(
+                    stage="deep_scan", processed=processed, total=total,
+                    message=f"matched {updated} so far",
+                ))
+            await state.bus.publish(ProgressEvent(
+                stage="deep_scan", processed=total, total=total,
+                message=f"done — {updated} files updated",
+            ))
+        finally:
+            await acoustid.aclose()
+            await state.bus.flush()
+
+    state.cancel_event.clear()
+    state.scan_task = asyncio.create_task(_run())
+    return JSONResponse(
+        {
+            "ok": True,
+            "message": f"Deep scan started — {total} files queued, watch the progress bar",
+        }
+    )
 
 
 @router.post("/ai_scan")
 async def ai_scan(request: Request, batch_size: int = 20, limit: int = 100) -> JSONResponse:
-    """Use Claude to identify metadata for unmatched files.
+    """Kick off Claude metadata identification as a background task.
 
-    Reads up to `limit` unmatched files, sends them to Claude in batches of
-    `batch_size`, and writes back any usable artist/title guesses (so the next
-    Spotify match pass can find them). Returns a summary count.
+    Returns immediately. Progress events stream over the WebSocket and surface
+    in the dashboard's progress bar. Final summary is included as the
+    `message` of the last event when finished.
     """
     state = request.app.state.app_state
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return JSONResponse(
             {"error": "ANTHROPIC_API_KEY not set"}, status_code=400,
+        )
+    if state.scan_task and not state.scan_task.done():
+        return JSONResponse(
+            {"error": "another job is running — stop it first"}, status_code=409,
         )
 
     cur = await state.db_conn.execute(
@@ -322,50 +371,76 @@ async def ai_scan(request: Request, batch_size: int = 20, limit: int = 100) -> J
     )
     rows = await cur.fetchall()
     if not rows:
-        return JSONResponse({"processed": 0, "updated": 0})
+        return JSONResponse(
+            {"ok": True, "message": "No unmatched files for AI scan"}
+        )
 
     files = [
         {"id": r[0], "path": r[1], "artist": r[2], "title": r[3], "album": r[4]}
         for r in rows
     ]
+    total = len(files)
 
-    ai = AIClient()  # auto-reads ANTHROPIC_API_KEY + CLAUDE_MODEL from env
-    by_confidence: dict[str, int] = {"high": 0, "medium": 0, "low": 0, "none": 0}
-    updated = 0
-    try:
-        for i in range(0, len(files), batch_size):
-            batch = files[i : i + batch_size]
-            try:
-                suggestions = await ai.suggest_metadata(batch)
-            except Exception as e:  # surface to caller, don't crash the loop
-                return JSONResponse(
-                    {"error": f"AI request failed: {e}", "updated": updated},
-                    status_code=502,
-                )
+    async def _run() -> None:
+        ai = AIClient()  # reads ANTHROPIC_API_KEY + CLAUDE_MODEL from env
+        by_confidence: dict[str, int] = {"high": 0, "medium": 0, "low": 0, "none": 0}
+        updated = 0
+        processed = 0
+        await state.bus.publish(ProgressEvent(
+            stage="ai_scan", processed=0, total=total,
+            message=f"sending {total} files to Claude in batches of {batch_size}",
+        ))
+        try:
+            for i in range(0, total, batch_size):
+                if state.cancel_event.is_set():
+                    await state.bus.publish(ProgressEvent(
+                        stage="ai_scan", processed=processed, total=total,
+                        message="cancelled",
+                    ))
+                    return
+                batch = files[i : i + batch_size]
+                try:
+                    suggestions = await ai.suggest_metadata(batch)
+                except Exception as e:
+                    await state.bus.publish(ProgressEvent(
+                        stage="ai_scan", processed=processed, total=total,
+                        message=f"failed: {e}",
+                    ))
+                    return
+                for s in suggestions:
+                    by_confidence[s.confidence] = by_confidence.get(s.confidence, 0) + 1
+                    if s.usable:
+                        await state.db_conn.execute(
+                            """UPDATE local_file SET artist=?, title=?, album=?,
+                               status='scanned', metadata_source='ai' WHERE id=?""",
+                            (s.artist, s.title, s.album, s.file_id),
+                        )
+                        updated += 1
+                await state.db_conn.commit()
+                processed += len(batch)
+                await state.bus.publish(ProgressEvent(
+                    stage="ai_scan", processed=processed, total=total,
+                    message=f"updated {updated}, "
+                            f"high {by_confidence['high']} / "
+                            f"medium {by_confidence['medium']} / "
+                            f"low {by_confidence['low']} / "
+                            f"none {by_confidence['none']}",
+                ))
+            await state.bus.publish(ProgressEvent(
+                stage="ai_scan", processed=total, total=total,
+                message=f"done — {updated} files have AI metadata, "
+                        "click Start scan to run Spotify match",
+            ))
+        finally:
+            await ai.aclose()
+            await state.bus.flush()
 
-            for s in suggestions:
-                by_confidence[s.confidence] = by_confidence.get(s.confidence, 0) + 1
-                if not s.usable:
-                    continue
-                # Re-queue for Spotify search with the AI's guess.
-                await state.db_conn.execute(
-                    """UPDATE local_file SET artist=?, title=?, album=?,
-                       status='scanned', metadata_source='ai' WHERE id=?""",
-                    (s.artist, s.title, s.album, s.file_id),
-                )
-                updated += 1
-            await state.db_conn.commit()
-    finally:
-        await ai.aclose()
-
+    state.cancel_event.clear()
+    state.scan_task = asyncio.create_task(_run())
     return JSONResponse(
         {
-            "processed": len(files),
-            "updated": updated,
-            "by_confidence": by_confidence,
-            "next_step": "Click 'Start scan' to run Spotify match on the AI-updated files."
-            if updated
-            else "No usable suggestions — review unmatched list manually.",
+            "ok": True,
+            "message": f"AI scan started — {total} files queued, watch the progress bar",
         }
     )
 
