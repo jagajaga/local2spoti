@@ -41,3 +41,21 @@ async def test_lookup_no_match():
     client = AcoustidClient(api_key="test")
     md = await client.lookup(fingerprint="FP", duration=423)
     assert md is None
+
+
+@respx.mock
+async def test_lookup_raises_on_invalid_api_key():
+    """Regression: AcoustID returns 200 with status=error when the API key
+    is rejected. The client must raise instead of silently swallowing."""
+    from local2spoti.acoustid import AcoustidError
+    respx.get("https://api.acoustid.org/v2/lookup").mock(
+        return_value=httpx.Response(200, json={
+            "status": "error",
+            "error": {"code": 4, "message": "invalid API key"},
+        })
+    )
+    client = AcoustidClient(api_key="bogus")
+    with pytest.raises(AcoustidError) as exc:
+        await client.lookup(fingerprint="FP", duration=423)
+    assert exc.value.code == 4
+    assert "invalid API key" in exc.value.message

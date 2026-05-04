@@ -8,7 +8,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .. import repo
-from ..acoustid import AcoustidClient, fingerprint, fpcalc_available
+from ..acoustid import AcoustidClient, AcoustidError, fingerprint, fpcalc_available
 from ..ai_match import AIClient
 from ..events import ProgressEvent
 from ..matcher import Threshold
@@ -294,7 +294,9 @@ async def deep_scan(request: Request, limit: int = 200) -> JSONResponse:
 
     async def _run() -> None:
         acoustid = AcoustidClient(api_key=state.settings.acoustid_api_key)
-        updated = 0
+        # Per-file outcomes — without this breakdown we couldn't tell
+        # "0 matched" from "API key invalid" from "fpcalc segfaulted".
+        outcomes = {"matched": 0, "no_match": 0, "fpcalc_failed": 0, "api_error": 0}
         processed = 0
         await state.bus.publish(ProgressEvent(
             stage="deep_scan", processed=0, total=total,
@@ -309,28 +311,46 @@ async def deep_scan(request: Request, limit: int = 200) -> JSONResponse:
                     ))
                     return
                 fp = await fingerprint(Path(path_str))
-                if fp is not None:
+                if fp is None:
+                    outcomes["fpcalc_failed"] += 1
+                else:
                     dur, fingerprint_str = fp
-                    md = await acoustid.lookup(
-                        fingerprint=fingerprint_str, duration=dur,
-                    )
-                    if md is not None:
+                    try:
+                        md = await acoustid.lookup(
+                            fingerprint=fingerprint_str, duration=dur,
+                        )
+                    except AcoustidError as err:
+                        # Bail loudly on auth/quota errors — every other file
+                        # would just hit the same wall.
+                        await state.bus.publish(ProgressEvent(
+                            stage="deep_scan", processed=processed, total=total,
+                            message=f"AcoustID error {err.code}: {err.message} — aborting",
+                        ))
+                        return
+                    if md is None:
+                        outcomes["no_match"] += 1
+                    else:
                         await state.db_conn.execute(
                             """UPDATE local_file SET artist=?, title=?, status='scanned',
                                metadata_source='acoustid' WHERE id=?""",
                             (md.artist, md.title, fid),
                         )
                         await state.db_conn.commit()
-                        updated += 1
+                        outcomes["matched"] += 1
                 processed += 1
-                # Coalesced at the bus's min_interval (100ms by default).
                 await state.bus.publish(ProgressEvent(
                     stage="deep_scan", processed=processed, total=total,
-                    message=f"matched {updated} so far",
+                    message=f"matched {outcomes['matched']} / "
+                            f"no_match {outcomes['no_match']} / "
+                            f"fpcalc_failed {outcomes['fpcalc_failed']}",
                 ))
             await state.bus.publish(ProgressEvent(
                 stage="deep_scan", processed=total, total=total,
-                message=f"done — {updated} files updated",
+                message=(
+                    f"done — matched {outcomes['matched']}, "
+                    f"no_match {outcomes['no_match']}, "
+                    f"fpcalc_failed {outcomes['fpcalc_failed']}"
+                ),
             ))
         finally:
             await acoustid.aclose()
