@@ -38,3 +38,38 @@ def test_chunk_name_contains_index_and_total():
     names = [c.name for c in chunks]
     for i, n in enumerate(names, start=1):
         assert f"{i}/{len(chunks)}" in n
+
+
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock
+
+import pytest
+
+from local2spoti.db import connect, init_schema
+from local2spoti.playlist import push_matched_to_spotify
+from local2spoti.models import FileStatus, LocalFile
+from local2spoti import repo
+
+
+async def test_push_creates_playlists_and_inserts_track_rows(tmp_path):
+    db = tmp_path / "t.db"
+    client = AsyncMock()
+    client.me.return_value = {"id": "user1"}
+    client.create_playlist.return_value = {"id": "spotPlay1", "name": "Local Library 1/1"}
+    client.add_tracks.return_value = None
+
+    async with connect(db) as conn:
+        await init_schema(conn)
+        now = datetime(2026, 5, 4, tzinfo=UTC)
+        for i in range(3):
+            await repo.upsert_local_file(conn, LocalFile(
+                path=f"/{i}.mp3", mtime=1, size=1, format="mp3",
+                artist="Daft Punk", title=f"T{i}",
+                spotify_track_id=f"track{i}",
+                status=FileStatus.MATCHED,
+            ), now=now)
+        result = await push_matched_to_spotify(conn=conn, client=client)
+        assert result.added == 3
+        assert client.add_tracks.await_count == 1
+        cur = await conn.execute("SELECT COUNT(*) FROM playlist_track")
+        assert (await cur.fetchone())[0] == 3
