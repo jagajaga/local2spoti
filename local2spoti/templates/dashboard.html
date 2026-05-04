@@ -105,28 +105,46 @@
       <span id="scan-status" class="text-xs text-zinc-400 ml-2"></span>
     </div>
 
-    <div class="space-y-2">
-      <div id="scan-stage" class="text-sm text-zinc-400">Idle</div>
-      <div class="h-3 bg-zinc-800 rounded overflow-hidden">
-        <div id="scan-bar" class="h-full bg-emerald-600 transition-all duration-200" style="width:0%"></div>
+    <!-- One bar per stage. Each bar tracks its own stream of events
+         independently so a fast-completing stage (discovery) doesn't
+         overwrite progress of a slow one (match), and ai_scan/deep_scan
+         don't fight the main pipeline for the same UI slot. -->
+    <div class="space-y-2 mb-3">
+      {% for stg, label, color in [
+        ("discovery", "Discovery (filesystem walk)", "bg-blue-600"),
+        ("metadata", "Metadata (tag reading)", "bg-cyan-600"),
+        ("match", "Spotify match", "bg-emerald-600"),
+        ("deep_scan", "AcoustID deep scan", "bg-amber-600"),
+        ("ai_scan", "AI matching (Claude)", "bg-purple-600"),
+      ] %}
+      <div class="text-xs">
+        <div class="flex justify-between text-zinc-400 mb-0.5">
+          <span class="font-mono">{{ label }}</span>
+          <span id="stage-{{ stg }}-text" class="font-mono text-zinc-500">idle</span>
+        </div>
+        <div class="h-2.5 bg-zinc-800 rounded overflow-hidden">
+          <div id="bar-{{ stg }}" class="h-full {{ color }} transition-all duration-200" style="width:0%"></div>
+        </div>
       </div>
-      <div class="grid grid-cols-4 gap-2 text-center text-sm pt-2">
-        <div class="bg-zinc-800 rounded p-2">
-          <div id="sc-matched" class="text-lg">{{ counts.matched or 0 }}</div>
-          <div class="text-xs text-zinc-500">matched</div>
-        </div>
-        <div class="bg-zinc-800 rounded p-2">
-          <div id="sc-review" class="text-lg">{{ counts.review or 0 }}</div>
-          <div class="text-xs text-zinc-500">review</div>
-        </div>
-        <div class="bg-zinc-800 rounded p-2">
-          <div id="sc-unmatched" class="text-lg">{{ counts.unmatched or 0 }}</div>
-          <div class="text-xs text-zinc-500">unmatched</div>
-        </div>
-        <div class="bg-zinc-800 rounded p-2">
-          <div id="sc-errors" class="text-lg">{{ counts.error or 0 }}</div>
-          <div class="text-xs text-zinc-500">errors</div>
-        </div>
+      {% endfor %}
+    </div>
+
+    <div class="grid grid-cols-4 gap-2 text-center text-sm pt-2">
+      <div class="bg-zinc-800 rounded p-2">
+        <div id="sc-matched" class="text-lg">{{ counts.matched or 0 }}</div>
+        <div class="text-xs text-zinc-500">matched</div>
+      </div>
+      <div class="bg-zinc-800 rounded p-2">
+        <div id="sc-review" class="text-lg">{{ counts.review or 0 }}</div>
+        <div class="text-xs text-zinc-500">review</div>
+      </div>
+      <div class="bg-zinc-800 rounded p-2">
+        <div id="sc-unmatched" class="text-lg">{{ counts.unmatched or 0 }}</div>
+        <div class="text-xs text-zinc-500">unmatched</div>
+      </div>
+      <div class="bg-zinc-800 rounded p-2">
+        <div id="sc-errors" class="text-lg">{{ counts.error or 0 }}</div>
+        <div class="text-xs text-zinc-500">errors</div>
       </div>
     </div>
   </section>
@@ -141,12 +159,21 @@
         var e;
         try { e = JSON.parse(evt.detail.message); } catch (_) { return; }
         if (typeof e.stage === "undefined") return;
-        setText("scan-stage", e.stage + ": " + e.processed + " / " + e.total
-                + (e.message ? "  —  " + e.message : ""));
-        if (e.total > 0) {
+
+        // Route to the bar matching this stage. Unknown stages get ignored
+        // (rather than silently overwriting one of the known bars).
+        var bar = document.getElementById("bar-" + e.stage);
+        var label = document.getElementById("stage-" + e.stage + "-text");
+        if (bar && e.total > 0) {
           var pct = Math.round(100 * e.processed / e.total);
-          document.getElementById("scan-bar").style.width = pct + "%";
+          bar.style.width = pct + "%";
         }
+        if (label) {
+          label.textContent = e.processed + " / " + e.total
+            + (e.message ? "  —  " + e.message : "");
+        }
+
+        // Counts apply globally regardless of which stage fired the event.
         setText("sc-matched", e.matched);
         setText("sc-review", e.review);
         setText("sc-unmatched", e.unmatched);

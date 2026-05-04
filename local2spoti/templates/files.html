@@ -38,13 +38,26 @@
     <span id="unmatched-status" class="text-xs text-zinc-300 font-mono ml-2"></span>
   </div>
 
-  <!-- Live progress bar — listens to the same /ws/progress WebSocket as the
-       dashboard, so any active deep_scan/ai_scan/match shows up here too. -->
-  <div>
-    <div id="scan-stage" class="text-xs text-zinc-400 font-mono mb-1">Idle — click a button above to start</div>
-    <div class="h-3 bg-zinc-800 rounded overflow-hidden">
-      <div id="scan-bar" class="h-full bg-emerald-600 transition-all duration-200" style="width:0%"></div>
+  <!-- One bar per stage — same /ws/progress feed as the dashboard.
+       Stages run independently so each gets its own track. -->
+  <div class="space-y-2">
+    {% for stg, label, color in [
+      ("discovery", "Discovery", "bg-blue-600"),
+      ("metadata", "Metadata", "bg-cyan-600"),
+      ("match", "Spotify match", "bg-emerald-600"),
+      ("deep_scan", "AcoustID deep scan", "bg-amber-600"),
+      ("ai_scan", "AI matching (Claude)", "bg-purple-600"),
+    ] %}
+    <div class="text-xs">
+      <div class="flex justify-between text-zinc-400 mb-0.5">
+        <span class="font-mono">{{ label }}</span>
+        <span id="stage-{{ stg }}-text" class="font-mono text-zinc-500">idle</span>
+      </div>
+      <div class="h-2.5 bg-zinc-800 rounded overflow-hidden">
+        <div id="bar-{{ stg }}" class="h-full {{ color }} transition-all duration-200" style="width:0%"></div>
+      </div>
     </div>
+    {% endfor %}
   </div>
 </section>
 <style>
@@ -54,20 +67,18 @@
 </style>
 <script>
   (function () {
-    function setText(id, val) {
-      var el = document.getElementById(id);
-      if (el && val !== undefined && val !== null) el.textContent = val;
-    }
     document.body.addEventListener("htmx:wsAfterMessage", function (evt) {
       var e;
       try { e = JSON.parse(evt.detail.message); } catch (_) { return; }
       if (typeof e.stage === "undefined") return;
-      setText("scan-stage", e.stage + ": " + e.processed + " / " + e.total
-              + (e.message ? "  —  " + e.message : ""));
-      if (e.total > 0) {
-        var pct = Math.round(100 * e.processed / e.total);
-        var bar = document.getElementById("scan-bar");
-        if (bar) bar.style.width = pct + "%";
+      var bar = document.getElementById("bar-" + e.stage);
+      var label = document.getElementById("stage-" + e.stage + "-text");
+      if (bar && e.total > 0) {
+        bar.style.width = Math.round(100 * e.processed / e.total) + "%";
+      }
+      if (label) {
+        label.textContent = e.processed + " / " + e.total
+          + (e.message ? "  —  " + e.message : "");
       }
     });
   })();
