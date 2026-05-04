@@ -191,7 +191,7 @@ pip install -e ".[dev]"
 local2spoti
 ```
 
-Then open http://127.0.0.1:8765.
+Then open http://127.0.0.1:8000.
 
 See `docs/superpowers/specs/2026-05-04-local2spoti-design.md` for design details.
 ```
@@ -236,7 +236,7 @@ def test_threshold_default():
     s = Settings(spotify_client_id="abc")
     assert s.threshold == "balanced"
     assert s.host == "127.0.0.1"
-    assert s.port == 8765
+    assert s.port == 8000
 
 
 def test_creates_data_dir(tmp_path, monkeypatch):
@@ -277,7 +277,7 @@ class Settings(BaseSettings):
     )
 
     host: str = "127.0.0.1"
-    port: int = 8765
+    port: int = 8000
     threshold: Threshold = "balanced"
 
     library_root: Path | None = None
@@ -1816,7 +1816,7 @@ from local2spoti.spotify_oauth import build_authorize_url, exchange_code, refres
 def test_build_authorize_url():
     pkce = PKCE.generate()
     url = build_authorize_url(
-        client_id="cid", redirect_uri="http://127.0.0.1:8765/callback",
+        client_id="cid", redirect_uri="http://127.0.0.1:8000/callback",
         scope="x y", state="st", pkce=pkce,
     )
     assert "client_id=cid" in url
@@ -1836,7 +1836,7 @@ async def test_exchange_code():
     pkce = PKCE.generate()
     out = await exchange_code(
         code="code123", client_id="cid",
-        redirect_uri="http://127.0.0.1:8765/callback", pkce=pkce,
+        redirect_uri="http://127.0.0.1:8000/callback", pkce=pkce,
     )
     assert out["access_token"] == "atk"
     assert out["refresh_token"] == "rtk"
@@ -4157,7 +4157,7 @@ And in `create_app()`:
 - [ ] **Step 6: Manual smoke**
 
 Run: `python -m local2spoti`
-Open `http://127.0.0.1:8765`. Confirm dashboard renders. Stop.
+Open `http://127.0.0.1:8000`. Confirm dashboard renders. Stop.
 
 - [ ] **Step 7: Commit**
 
@@ -4230,7 +4230,7 @@ async def auth_login(request: Request) -> RedirectResponse:
     pkce = PKCE.generate()
     state_token = secrets.token_urlsafe(16)
     _PKCE_STORE[state_token] = pkce
-    redirect_uri = f"http://127.0.0.1:{state.settings.port}/auth/callback"
+    redirect_uri = f"http://127.0.0.1:{state.settings.port}/callback"
     url = build_authorize_url(
         client_id=state.settings.spotify_client_id,
         redirect_uri=redirect_uri,
@@ -4241,7 +4241,7 @@ async def auth_login(request: Request) -> RedirectResponse:
     return RedirectResponse(url, status_code=307)
 
 
-@router.get("/auth/callback")
+@router.get("/callback")
 async def auth_callback(request: Request) -> RedirectResponse:
     code = request.query_params.get("code")
     state_token = request.query_params.get("state")
@@ -4249,7 +4249,7 @@ async def auth_callback(request: Request) -> RedirectResponse:
         return JSONResponse({"error": "invalid callback"}, status_code=400)
     pkce = _PKCE_STORE.pop(state_token)
     state = request.app.state.app_state
-    redirect_uri = f"http://127.0.0.1:{state.settings.port}/auth/callback"
+    redirect_uri = f"http://127.0.0.1:{state.settings.port}/callback"
     tokens = await exchange_code(
         code=code,
         client_id=state.settings.spotify_client_id,
@@ -4827,7 +4827,7 @@ sudo apt install libchromaprint-tools  # Debian/Ubuntu
 
 1. Visit https://developer.spotify.com/dashboard and click "Create app".
 2. App name: anything (e.g. "Local2Spoti").
-3. Redirect URI: `http://127.0.0.1:8765/auth/callback`
+3. Redirect URI: `http://127.0.0.1:8000/callback`
 4. Save and copy your "Client ID".
 5. Set environment variable:
    ```bash
@@ -4844,7 +4844,7 @@ sudo apt install libchromaprint-tools  # Debian/Ubuntu
 local2spoti
 ```
 
-Then open http://127.0.0.1:8765.
+Then open http://127.0.0.1:8000.
 
 1. Click "Connect Spotify" on the dashboard.
 2. Set your library path.
@@ -4861,7 +4861,7 @@ Configuration lives in `~/.local2spoti/config.toml` and via environment variable
 | `acoustid_api_key` | (optional) From https://acoustid.org/api-key |
 | `threshold` | `strict` / `balanced` (default) / `loose` |
 | `host` | Bind host (default `127.0.0.1`) |
-| `port` | Port (default `8765`) |
+| `port` | Port (default `8000`) |
 
 ## Development
 
@@ -5140,11 +5140,11 @@ This task verifies end-to-end behavior on the user's actual machine.
 - [ ] **Step 1: Start the app**
 
 Run: `python -m local2spoti`
-Expected: server starts on `http://127.0.0.1:8765`, no errors in the terminal.
+Expected: server starts on `http://127.0.0.1:8000`, no errors in the terminal.
 
 - [ ] **Step 2: Connect Spotify**
 
-In browser: visit `http://127.0.0.1:8765/dashboard`. Click "Connect Spotify". Authorize. Expected redirect back to dashboard showing your Spotify display name.
+In browser: visit `http://127.0.0.1:8000/dashboard`. Click "Connect Spotify". Authorize. Expected redirect back to dashboard showing your Spotify display name.
 
 - [ ] **Step 3: Set library path**
 
