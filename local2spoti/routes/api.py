@@ -117,9 +117,10 @@ async def reset(request: Request) -> JSONResponse:
       - setting (library_root, threshold, etc.)
     """
     state = request.app.state.app_state
-    if state.scan_task and not state.scan_task.done():
+    if state.any_job_running():
         return JSONResponse(
-            {"error": "scan running — stop it first"}, status_code=409,
+            {"error": "a scan/deep_scan/ai_scan is running — stop it first"},
+            status_code=409,
         )
     conn = state.db_conn
     # Order matters: children before parents (FKs cascade but be explicit)
@@ -207,7 +208,10 @@ async def browse(request: Request, path: str | None = None) -> HTMLResponse:
 async def scan_start(request: Request) -> JSONResponse:
     state = request.app.state.app_state
     if state.scan_task and not state.scan_task.done():
-        return JSONResponse({"error": "scan already running"}, status_code=409)
+        return JSONResponse(
+            {"error": "Spotify scan already running — stop it first"},
+            status_code=409,
+        )
     if not state.settings.library_root:
         return JSONResponse({"error": "library_root not configured"}, status_code=400)
 
@@ -221,7 +225,9 @@ async def scan_start(request: Request) -> JSONResponse:
 
     threshold = Threshold(state.settings.threshold)
     client = SpotifyClient(access_token=access_token, bucket=state.spotify_bucket)
-    state.cancel_event.clear()
+    # Only clear the cancel event if no other long-running job is using it.
+    if not state.any_job_running():
+        state.cancel_event.clear()
 
     async def _run() -> None:
         try:
@@ -234,17 +240,28 @@ async def scan_start(request: Request) -> JSONResponse:
             await client.aclose()
 
     state.scan_task = asyncio.create_task(_run())
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "message": "Spotify scan started"})
 
 
 @router.post("/scan/cancel")
 async def scan_cancel(request: Request) -> JSONResponse:
+    """Stop every running long-running job (scan / deep_scan / ai_scan)."""
     state = request.app.state.app_state
-    if state.scan_task and not state.scan_task.done():
-        state.cancel_event.set()
-        state.scan_task.cancel()
-        return JSONResponse({"ok": True})
-    return JSONResponse({"error": "no scan running"}, status_code=400)
+    cancelled: list[str] = []
+    state.cancel_event.set()
+    for label, task in (
+        ("scan", state.scan_task),
+        ("deep_scan", state.deep_scan_task),
+        ("ai_scan", state.ai_scan_task),
+    ):
+        if task is not None and not task.done():
+            task.cancel()
+            cancelled.append(label)
+    if not cancelled:
+        return JSONResponse({"error": "no jobs running"}, status_code=400)
+    return JSONResponse(
+        {"ok": True, "message": "Stopped: " + ", ".join(cancelled)}
+    )
 
 
 @router.post("/push")
@@ -268,17 +285,20 @@ async def push(request: Request) -> JSONResponse:
 async def deep_scan(request: Request, limit: int = 100000) -> JSONResponse:
     """Kick off an AcoustID deep scan as a background task.
 
-    Returns immediately so the UI doesn't block; progress events stream over
-    the WebSocket and surface in the dashboard's progress bar.
+    Runs in its own slot, so it can execute in parallel with /api/scan/start
+    and /api/ai_scan. Race guard: each file is re-checked against the DB
+    before fingerprinting in case another concurrent job (AI scan) already
+    moved it out of the unmatched pool.
     """
     state = request.app.state.app_state
     if not fpcalc_available():
         return JSONResponse({"error": "fpcalc not installed"}, status_code=400)
     if not state.settings.acoustid_api_key:
         return JSONResponse({"error": "acoustid_api_key not set"}, status_code=400)
-    if state.scan_task and not state.scan_task.done():
+    if state.deep_scan_task and not state.deep_scan_task.done():
         return JSONResponse(
-            {"error": "another job is running — stop it first"}, status_code=409,
+            {"error": "Deep scan already running — stop it first"},
+            status_code=409,
         )
 
     cur = await state.db_conn.execute(
@@ -310,6 +330,16 @@ async def deep_scan(request: Request, limit: int = 100000) -> JSONResponse:
                         message="cancelled",
                     ))
                     return
+                # Race guard: another concurrent job (e.g. AI scan) may have
+                # already promoted this file out of `unmatched`. Skip it
+                # before doing the expensive fingerprint+lookup.
+                cur2 = await state.db_conn.execute(
+                    "SELECT status FROM local_file WHERE id=?", (fid,),
+                )
+                row2 = await cur2.fetchone()
+                if row2 is None or row2[0] != "unmatched":
+                    processed += 1
+                    continue
                 fp = await fingerprint(Path(path_str))
                 if fp is None:
                     outcomes["fpcalc_failed"] += 1
@@ -356,8 +386,9 @@ async def deep_scan(request: Request, limit: int = 100000) -> JSONResponse:
             await acoustid.aclose()
             await state.bus.flush()
 
-    state.cancel_event.clear()
-    state.scan_task = asyncio.create_task(_run())
+    if not state.any_job_running():
+        state.cancel_event.clear()
+    state.deep_scan_task = asyncio.create_task(_run())
     return JSONResponse(
         {
             "ok": True,
@@ -379,9 +410,10 @@ async def ai_scan(request: Request, batch_size: int = 20, limit: int = 100000) -
         return JSONResponse(
             {"error": "ANTHROPIC_API_KEY not set"}, status_code=400,
         )
-    if state.scan_task and not state.scan_task.done():
+    if state.ai_scan_task and not state.ai_scan_task.done():
         return JSONResponse(
-            {"error": "another job is running — stop it first"}, status_code=409,
+            {"error": "AI scan already running — stop it first"},
+            status_code=409,
         )
 
     cur = await state.db_conn.execute(
@@ -419,6 +451,21 @@ async def ai_scan(request: Request, batch_size: int = 20, limit: int = 100000) -
                     ))
                     return
                 batch = files[i : i + batch_size]
+                # Race guard: filter out files that another concurrent job
+                # (deep_scan) already promoted out of `unmatched`.
+                ids = [f["id"] for f in batch]
+                placeholders = ",".join("?" * len(ids))
+                cur2 = await state.db_conn.execute(
+                    f"SELECT id FROM local_file "
+                    f"WHERE id IN ({placeholders}) AND status='unmatched'",
+                    ids,
+                )
+                still_unmatched = {r[0] for r in await cur2.fetchall()}
+                skipped_in_batch = len(batch) - len(still_unmatched)
+                batch = [f for f in batch if f["id"] in still_unmatched]
+                if not batch:
+                    processed += skipped_in_batch
+                    continue
                 try:
                     suggestions = await ai.suggest_metadata(batch)
                 except Exception as e:
@@ -455,8 +502,9 @@ async def ai_scan(request: Request, batch_size: int = 20, limit: int = 100000) -
             await ai.aclose()
             await state.bus.flush()
 
-    state.cancel_event.clear()
-    state.scan_task = asyncio.create_task(_run())
+    if not state.any_job_running():
+        state.cancel_event.clear()
+    state.ai_scan_task = asyncio.create_task(_run())
     return JSONResponse(
         {
             "ok": True,

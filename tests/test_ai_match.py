@@ -137,7 +137,7 @@ async def test_ai_scan_endpoint_happy_path(tmp_path, monkeypatch):
             assert "AI scan started" in r.json()["message"]
 
             # Wait for the background task to complete.
-            task = app.state.app_state.scan_task
+            task = app.state.app_state.ai_scan_task
             await asyncio.wait_for(task, timeout=5.0)
 
     # DB state after the task ran.
