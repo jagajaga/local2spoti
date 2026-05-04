@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import load_settings
 from .db import connect, init_schema
+from .logging_config import configure as configure_logging
 from .routes.api import router as api_router, auth_router
 from .routes.ui import router as ui_router
 from .routes.ws import router as ws_router
@@ -35,10 +36,20 @@ def _static_dir() -> Path:
 async def lifespan(app: FastAPI):
     settings = load_settings()
     settings.ensure_dirs()
+    configure_logging(settings.log_dir)
     state = AppState(settings=settings)
 
     async with connect(settings.db_path) as conn:
         await init_schema(conn)
+        # Restore persisted settings from the `setting` table
+        cur = await conn.execute("SELECT key, value FROM setting")
+        for k, v in await cur.fetchall():
+            if k == "library_root":
+                state.settings.library_root = Path(v)
+            elif k == "threshold":
+                state.settings.threshold = v  # type: ignore[assignment]
+            elif k == "acoustid_api_key":
+                state.settings.acoustid_api_key = v
         state.db_conn = conn
         app.state.app_state = state
         yield
