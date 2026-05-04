@@ -31,6 +31,7 @@ dev = [
     "mypy>=1.13",
     "playwright>=1.48",
     "beautifulsoup4>=4.12",
+    "asgi-lifespan>=2.1",
 ]
 
 [project.scripts]

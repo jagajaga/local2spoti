@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Local2Spoti{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+  <script src="https://unpkg.com/htmx.org@2.0.3/dist/ext/ws.js"></script>
+</head>
+<body class="bg-zinc-950 text-zinc-100 min-h-screen">
+  <header class="border-b border-zinc-800 px-6 py-4 flex justify-between items-center">
+    <a href="/dashboard" class="text-xl font-semibold">Local2Spoti</a>
+    <nav class="flex gap-4 text-sm">
+      <a href="/dashboard" class="hover:text-white">Dashboard</a>
+      <a href="/scan" class="hover:text-white">Scan</a>
+      <a href="/files" class="hover:text-white">Files</a>
+      <a href="/review" class="hover:text-white">Review</a>
+      <a href="/unmatched" class="hover:text-white">Unmatched</a>
+    </nav>
+  </header>
+  <main class="max-w-6xl mx-auto p-6">{% block content %}{% endblock %}</main>
+</body>
+</html>

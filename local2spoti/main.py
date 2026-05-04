@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import load_settings
 from .db import connect, init_schema
+from .routes.ui import router as ui_router
 from .state import AppState
 
 try:
@@ -57,9 +58,7 @@ def create_app() -> FastAPI:
     async def health():
         return JSONResponse({"status": "ok"})
 
-    @app.get("/dashboard")
-    async def dashboard():
-        return JSONResponse({"placeholder": "dashboard"})
+    app.include_router(ui_router)
 
     return app
 

@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Local2Spoti{% endblock %}
+{% block content %}
+<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+  <section class="bg-zinc-900 rounded-lg p-5">
+    <h2 class="text-lg font-semibold mb-3">Library</h2>
+    <p class="text-sm text-zinc-400">Root: <code>{{ library_root or "(not set)" }}</code></p>
+    <p class="text-sm text-zinc-400">Files in DB: {{ total_files }}</p>
+    <p class="text-sm text-zinc-400">Last scan: {{ last_scan_at or "never" }}</p>
+  </section>
+  <section class="bg-zinc-900 rounded-lg p-5">
+    <h2 class="text-lg font-semibold mb-3">Spotify</h2>
+    {% if spotify_user %}
+      <p class="text-sm">Connected as <strong>{{ spotify_user }}</strong></p>
+    {% else %}
+      <a href="/auth/login" class="inline-block mt-2 px-4 py-2 bg-emerald-600 rounded">Connect Spotify</a>
+    {% endif %}
+  </section>
+  <section class="bg-zinc-900 rounded-lg p-5 md:col-span-2">
+    <h2 class="text-lg font-semibold mb-3">Status</h2>
+    <div class="grid grid-cols-4 gap-4 text-center">
+      <a href="/files?status=matched" class="bg-zinc-800 rounded p-3">
+        <div class="text-2xl">{{ counts.matched or 0 }}</div>
+        <div class="text-xs text-zinc-400">Matched</div>
+      </a>
+      <a href="/review" class="bg-zinc-800 rounded p-3">
+        <div class="text-2xl">{{ counts.review or 0 }}</div>
+        <div class="text-xs text-zinc-400">Review</div>
+      </a>
+      <a href="/unmatched" class="bg-zinc-800 rounded p-3">
+        <div class="text-2xl">{{ counts.unmatched or 0 }}</div>
+        <div class="text-xs text-zinc-400">Unmatched</div>
+      </a>
+      <a href="/files?status=error" class="bg-zinc-800 rounded p-3">
+        <div class="text-2xl">{{ counts.error or 0 }}</div>
+        <div class="text-xs text-zinc-400">Errors</div>
+      </a>
+    </div>
+  </section>
+  <section class="bg-zinc-900 rounded-lg p-5 md:col-span-2">
+    <h2 class="text-lg font-semibold mb-3">Threshold</h2>
+    <form hx-post="/api/threshold" hx-trigger="change" class="flex gap-4">
+      {% for t in ["strict", "balanced", "loose"] %}
+      <label class="flex items-center gap-2">
+        <input type="radio" name="threshold" value="{{ t }}" {% if threshold == t %}checked{% endif %}>
+        <span class="capitalize">{{ t }}</span>
+      </label>
+      {% endfor %}
+    </form>
+    <form action="/api/scan/start" method="post" class="mt-4">
+      <button class="px-4 py-2 bg-blue-600 rounded" {% if not spotify_user %}disabled{% endif %}>
+        Start scan
+      </button>
+    </form>
+  </section>
+</div>
+{% endblock %}
