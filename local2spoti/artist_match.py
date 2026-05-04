@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Literal
+
+from .matcher import Threshold, decide, score_candidate
+from .models import LocalFile, MatchCandidate
+from .spotify_client import SpotifyClient
+
+ArtistDecision = Literal["auto", "review", "unmatched", "no_artist"]
+
+
+@dataclass(slots=True)
+class FileMatchResult:
+    file: LocalFile
+    decision: ArtistDecision
+    top_candidate: MatchCandidate | None
+    candidates: list[MatchCandidate]
+
+
+def _track_to_candidate(
+    track: dict, *, file: LocalFile, rank: int = 0,
+) -> MatchCandidate | None:
+    if not file.artist or not file.title:
+        return None
+    artists = track.get("artists", [{}])
+    spotify_artist = artists[0].get("name", "") if artists else ""
+    spotify_title = track.get("name", "")
+    spotify_album = (track.get("album") or {}).get("name") if track.get("album") else None
+    spotify_dur = track.get("duration_ms")
+    s = score_candidate(
+        local_artist=file.artist,
+        local_title=file.title,
+        local_album=file.album,
+        local_duration_ms=file.duration_ms,
+        spotify_artist=spotify_artist,
+        spotify_title=spotify_title,
+        spotify_album=spotify_album,
+        spotify_duration_ms=spotify_dur,
+    )
+    return MatchCandidate(
+        spotify_track_id=track["id"],
+        spotify_artist=spotify_artist,
+        spotify_title=spotify_title,
+        spotify_album=spotify_album,
+        spotify_duration_ms=spotify_dur,
+        artist_similarity=s.artist_similarity,
+        title_similarity=s.title_similarity,
+        duration_delta_ms=s.duration_delta_ms,
+        confidence=s.confidence,
+        rank=rank,
+    )
+
+
+async def match_artist_group(
+    *,
+    client: SpotifyClient,
+    artist: str,
+    files: list[LocalFile],
+    threshold: Threshold,
+) -> list[FileMatchResult]:
+    """Match every file in `files` against the Spotify catalog of `artist`."""
+    spotify_artist = await client.search_artist(artist)
+    if spotify_artist is None:
+        return [FileMatchResult(f, "no_artist", None, []) for f in files]
+
+    albums = await client.artist_albums(spotify_artist["id"])
+    album_ids = [a["id"] for a in albums]
+    full_albums = await client.albums_batch(album_ids)
+
+    catalog: list[dict] = []
+    seen_ids: set[str] = set()
+    for alb in full_albums:
+        for t in alb.get("tracks", {}).get("items", []):
+            if t["id"] in seen_ids:
+                continue
+            seen_ids.add(t["id"])
+            t = {**t, "album": {"name": alb.get("name")}}
+            catalog.append(t)
+
+    results: list[FileMatchResult] = []
+    for f in files:
+        scored = [c for c in (_track_to_candidate(t, file=f) for t in catalog) if c]
+        scored.sort(key=lambda c: -c.confidence)
+        top5 = scored[:5]
+        for i, c in enumerate(top5, start=1):
+            c.rank = i
+        if not top5:
+            results.append(FileMatchResult(f, "unmatched", None, []))
+            continue
+        top = top5[0]
+        decision = decide(
+            artist_sim=top.artist_similarity,
+            title_sim=top.title_similarity,
+            album_match=(top.spotify_album is not None and f.album is not None),
+            duration_delta_ms=top.duration_delta_ms,
+            threshold=threshold,
+        )
+        results.append(FileMatchResult(f, decision, top, top5))
+    return results
