@@ -46,11 +46,21 @@ class Settings(BaseSettings):
 
 
 def load_settings() -> Settings:
+    """Build Settings, layering: defaults < config.toml < env (.env / process env).
+
+    pydantic-settings init kwargs outrank env vars, so we only pass TOML keys
+    that are NOT also defined as LOCAL2SPOTI_ env vars — otherwise a TOML value
+    would silently shadow an explicit environment override.
+    """
     home = Path(os.environ.get("HOME", str(Path.home())))
     data_dir = home / ".local2spoti"
-    overrides: dict[str, object] = {"data_dir": data_dir}
+    overrides: dict[str, object] = {}
     toml = data_dir / "config.toml"
     if toml.exists():
         with toml.open("rb") as f:
-            overrides.update(tomllib.load(f))
+            for k, v in tomllib.load(f).items():
+                if f"LOCAL2SPOTI_{k.upper()}" not in os.environ:
+                    overrides[k] = v
+    if "LOCAL2SPOTI_DATA_DIR" not in os.environ and "data_dir" not in overrides:
+        overrides["data_dir"] = data_dir
     return Settings(**overrides)
