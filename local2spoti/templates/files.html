@@ -15,26 +15,63 @@
 </div>
 
 {% if status == "unmatched" and files | length > 0 %}
-<div class="mb-4 p-3 bg-zinc-900 rounded flex flex-wrap gap-2 items-center">
-  <span class="text-sm text-zinc-400">Try harder:</span>
-  <button hx-post="/api/ai_scan" hx-target="#unmatched-status" hx-swap="innerHTML"
-          hx-disabled-elt="this" hx-indicator="#ai-indicator"
-          class="px-3 py-1 bg-purple-700 hover:bg-purple-600 rounded text-sm disabled:opacity-50">
-    Try AI matching (Claude)
-  </button>
-  <button hx-post="/api/deep_scan" hx-target="#unmatched-status" hx-swap="innerHTML"
-          hx-disabled-elt="this"
-          class="px-3 py-1 bg-zinc-700 hover:bg-zinc-600 rounded text-sm disabled:opacity-50">
-    Deep scan (AcoustID)
-  </button>
-  <span id="ai-indicator" class="htmx-indicator text-xs text-zinc-400">working…</span>
-  <span id="unmatched-status" class="text-xs text-zinc-300 font-mono"></span>
-</div>
+<section class="mb-4 p-4 bg-zinc-900 rounded-lg space-y-3"
+         hx-ext="ws" ws-connect="/ws/progress">
+  <div class="flex flex-wrap gap-2 items-center">
+    <span class="text-sm text-zinc-300 font-semibold mr-1">Try harder:</span>
+    <button hx-post="/api/ai_scan" hx-target="#unmatched-status" hx-swap="innerHTML"
+            hx-disabled-elt="this" hx-indicator="#ai-indicator"
+            class="px-3 py-1 bg-purple-700 hover:bg-purple-600 rounded text-sm disabled:opacity-50">
+      Try AI matching (Claude)
+    </button>
+    <button hx-post="/api/deep_scan" hx-target="#unmatched-status" hx-swap="innerHTML"
+            hx-disabled-elt="this"
+            class="px-3 py-1 bg-zinc-700 hover:bg-zinc-600 rounded text-sm disabled:opacity-50">
+      Deep scan (AcoustID)
+    </button>
+    <button type="button"
+            hx-post="/api/scan/cancel" hx-target="#unmatched-status" hx-swap="innerHTML"
+            class="px-3 py-1 bg-red-700 hover:bg-red-600 rounded text-sm">
+      Stop
+    </button>
+    <span id="ai-indicator" class="htmx-indicator text-xs text-zinc-400">working…</span>
+    <span id="unmatched-status" class="text-xs text-zinc-300 font-mono ml-2"></span>
+  </div>
+
+  <!-- Live progress bar — listens to the same /ws/progress WebSocket as the
+       dashboard, so any active deep_scan/ai_scan/match shows up here too. -->
+  <div>
+    <div id="scan-stage" class="text-xs text-zinc-400 font-mono mb-1">Idle — click a button above to start</div>
+    <div class="h-3 bg-zinc-800 rounded overflow-hidden">
+      <div id="scan-bar" class="h-full bg-emerald-600 transition-all duration-200" style="width:0%"></div>
+    </div>
+  </div>
+</section>
 <style>
   .htmx-indicator { display: none; }
   .htmx-request .htmx-indicator { display: inline; }
   .htmx-request.htmx-indicator { display: inline; }
 </style>
+<script>
+  (function () {
+    function setText(id, val) {
+      var el = document.getElementById(id);
+      if (el && val !== undefined && val !== null) el.textContent = val;
+    }
+    document.body.addEventListener("htmx:wsAfterMessage", function (evt) {
+      var e;
+      try { e = JSON.parse(evt.detail.message); } catch (_) { return; }
+      if (typeof e.stage === "undefined") return;
+      setText("scan-stage", e.stage + ": " + e.processed + " / " + e.total
+              + (e.message ? "  —  " + e.message : ""));
+      if (e.total > 0) {
+        var pct = Math.round(100 * e.processed / e.total);
+        var bar = document.getElementById("scan-bar");
+        if (bar) bar.style.width = pct + "%";
+      }
+    });
+  })();
+</script>
 {% endif %}
 
 <div class="overflow-x-auto">
