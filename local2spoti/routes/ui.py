@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from .. import repo
@@ -44,12 +44,20 @@ async def dashboard(request: Request) -> HTMLResponse:
     )
 
 
-@router.get("/files", response_class=HTMLResponse)
+@router.get("/files")
 async def files(
     request: Request,
     status: str = Query("matched"),
     limit: int = 100000,  # effectively unbounded for typical libraries
-) -> HTMLResponse:
+):
+    # Review and unmatched have richer dedicated pages — keep one canonical
+    # URL per status so the table view and the candidate-card view never
+    # diverge.
+    if status == "review":
+        return RedirectResponse("/review", status_code=307)
+    if status == "unmatched":
+        return RedirectResponse("/unmatched", status_code=307)
+
     state = request.app.state.app_state
     try:
         st = FileStatus(status)

@@ -4,7 +4,8 @@
 <div class="mb-4 flex justify-between items-center">
   <div class="flex gap-2 text-sm">
     {% for s in statuses %}
-    <a href="/files?status={{ s }}"
+    {% set href = "/review" if s == "review" else "/unmatched" if s == "unmatched" else "/files?status=" ~ s %}
+    <a href="{{ href }}"
        class="px-3 py-1 rounded {% if s == status %}bg-blue-600{% else %}bg-zinc-800 hover:bg-zinc-700{% endif %}">
       {{ s }}
     </a>

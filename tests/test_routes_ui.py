@@ -40,3 +40,21 @@ async def test_files_page_lists_matched(tmp_path, monkeypatch):
             r = await c.get("/files?status=matched")
     assert r.status_code == 200
     assert "Daft Punk" in r.text
+
+
+async def test_files_status_review_redirects_to_review(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.get("/files?status=review", follow_redirects=False)
+    assert r.status_code == 307
+    assert r.headers["location"] == "/review"
+
+
+async def test_files_status_unmatched_redirects_to_unmatched(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.get("/files?status=unmatched", follow_redirects=False)
+    assert r.status_code == 307
+    assert r.headers["location"] == "/unmatched"
