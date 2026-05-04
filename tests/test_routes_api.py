@@ -118,3 +118,49 @@ async def test_approve_above_confidence_rejects_out_of_range(tmp_path, monkeypat
                               data={"threshold": "1.5"})
     assert r.status_code == 400
     assert "between 0.0 and 1.0" in r.json()["error"]
+
+
+async def test_match_endpoint_requires_spotify(tmp_path, monkeypatch):
+    """/api/match returns 400 if Spotify isn't connected."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    db = tmp_path / ".local2spoti" / "state.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    async with connect(db) as conn:
+        await init_schema(conn)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            r = await c.post("/api/match")
+    assert r.status_code == 400
+    assert "Spotify" in r.json()["error"]
+
+
+async def test_match_endpoint_starts_in_scan_slot(tmp_path, monkeypatch):
+    """/api/match starts a background task in the scan_task slot.
+
+    We seed a Spotify token but no scanned files — _stage_match emits a
+    'nothing to match' event and returns instantly, which lets us assert
+    the slot was used without standing up a real Spotify mock.
+    """
+    import asyncio
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    db = tmp_path / ".local2spoti" / "state.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    async with connect(db) as conn:
+        await init_schema(conn)
+        await conn.execute(
+            """INSERT INTO auth_token (key, access_token, refresh_token,
+                                       expires_at, scope, user_id)
+               VALUES ('spotify','at','rt','2099-01-01T00:00:00','x','u')"""
+        )
+        await conn.commit()
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            r = await c.post("/api/match")
+            assert r.status_code == 200
+            assert r.json()["ok"] is True
+            task = app.state.app_state.scan_task
+            assert task is not None
+            await asyncio.wait_for(task, timeout=5.0)

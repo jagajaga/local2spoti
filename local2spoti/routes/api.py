@@ -293,6 +293,50 @@ async def scan_start(request: Request) -> JSONResponse:
     })
 
 
+@router.post("/match")
+async def match_only(request: Request) -> JSONResponse:
+    """Run JUST the Spotify match stage on every status='scanned' file.
+
+    Use this when you have a backlog of scanned files (e.g. AI/AcoustID
+    promoted them, or a previous scan was cancelled mid-match) and you
+    want to match them without re-walking the filesystem or kicking off
+    a full smart pipeline. Counts as the 'scan' job slot since it uses
+    the Spotify rate-limit bucket.
+    """
+    state = request.app.state.app_state
+    if state.scan_task and not state.scan_task.done():
+        return JSONResponse(
+            {"error": "Spotify match/scan already running — stop it first"},
+            status_code=409,
+        )
+    cur = await state.db_conn.execute(
+        "SELECT access_token FROM auth_token WHERE key='spotify'"
+    )
+    row = await cur.fetchone()
+    if not row:
+        return JSONResponse({"error": "Spotify not connected"}, status_code=400)
+
+    threshold = Threshold(state.settings.threshold)
+    client = SpotifyClient(access_token=row[0], bucket=state.spotify_bucket)
+    if not state.any_job_running():
+        state.cancel_event.clear()
+
+    async def _run() -> None:
+        try:
+            await _stage_match(
+                state.db_conn, client, threshold,
+                bus=state.bus, now=_dt.now(UTC),
+            )
+        finally:
+            await client.aclose()
+
+    state.scan_task = asyncio.create_task(_run())
+    return JSONResponse({
+        "ok": True,
+        "message": "Match started — processing scanned files",
+    })
+
+
 @router.post("/scan/cancel")
 async def scan_cancel(request: Request) -> JSONResponse:
     """Stop every running long-running job (scan / deep_scan / ai_scan)."""
