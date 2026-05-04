@@ -134,7 +134,7 @@ async def _stage_match(
         )
         groups[normalize_artist(r[2] or "")].append(f)
 
-    counts = {"matched": 0, "review": 0, "unmatched": 0}
+    counts = {"matched": 0, "review": 0, "unmatched": 0, "errors": 0}
     total = len(rows)
     processed = 0
     sem = asyncio.Semaphore(12)
@@ -147,24 +147,44 @@ async def _stage_match(
         async with sem:
             current_artists.add(artist_label)
             try:
-                results = await match_artist_group(
-                    client=client, artist=files[0].artist or "", files=files,
-                    threshold=threshold,
-                )
-                no_artist_files = [r.file for r in results if r.decision == "no_artist"]
-                if no_artist_files:
-                    fallbacks = await match_per_track(
-                        client=client, files=no_artist_files, threshold=threshold,
+                # Inner try: any failure on THIS artist (Spotify 403/5xx,
+                # network blip, malformed response) marks just this group's
+                # files as error and lets the gather continue. Without this,
+                # a single bad artist kills the whole match stage.
+                try:
+                    results = await match_artist_group(
+                        client=client, artist=files[0].artist or "", files=files,
+                        threshold=threshold,
                     )
-                    results = [r for r in results if r.decision != "no_artist"] + fallbacks
-                await _persist_matches(conn, results, now=now, counts=counts)
-                processed += len(files)
-                await bus.publish(ProgressEvent(
-                    stage="match", processed=processed, total=total,
-                    matched=counts["matched"], review=counts["review"],
-                    unmatched=counts["unmatched"],
-                    message=f"matched {artist_label}",
-                ))
+                    no_artist_files = [r.file for r in results if r.decision == "no_artist"]
+                    if no_artist_files:
+                        fallbacks = await match_per_track(
+                            client=client, files=no_artist_files, threshold=threshold,
+                        )
+                        results = [r for r in results if r.decision != "no_artist"] + fallbacks
+                    await _persist_matches(conn, results, now=now, counts=counts)
+                    processed += len(files)
+                    await bus.publish(ProgressEvent(
+                        stage="match", processed=processed, total=total,
+                        matched=counts["matched"], review=counts["review"],
+                        unmatched=counts["unmatched"], errors=counts["errors"],
+                        message=f"matched {artist_label}",
+                    ))
+                except Exception as exc:
+                    err_msg = str(exc)[:200]
+                    for f in files:
+                        if f.id is not None:
+                            await repo.set_status(
+                                conn, f.id, FileStatus.ERROR, last_error=err_msg,
+                            )
+                            counts["errors"] += 1
+                    processed += len(files)
+                    await bus.publish(ProgressEvent(
+                        stage="match", processed=processed, total=total,
+                        matched=counts["matched"], review=counts["review"],
+                        unmatched=counts["unmatched"], errors=counts["errors"],
+                        message=f"⚠ {artist_label}: {err_msg[:80]}",
+                    ))
             finally:
                 current_artists.discard(artist_label)
 
@@ -180,7 +200,13 @@ async def _stage_match(
     ))
 
     try:
-        await asyncio.gather(*[process_artist(a, fs) for a, fs in groups.items()])
+        # return_exceptions=True so even an unanticipated failure path
+        # in process_artist (which we already wrap in try/except) can't
+        # kill the gather. Belt-and-suspenders against future regressions.
+        await asyncio.gather(
+            *[process_artist(a, fs) for a, fs in groups.items()],
+            return_exceptions=True,
+        )
     finally:
         heartbeat_stop.set()
         try:
@@ -188,12 +214,14 @@ async def _stage_match(
         except Exception:
             pass
 
+    err_suffix = f", {counts['errors']} errors" if counts["errors"] else ""
     await bus.publish(ProgressEvent(
         stage="match", processed=total, total=total,
         matched=counts["matched"], review=counts["review"],
-        unmatched=counts["unmatched"],
+        unmatched=counts["unmatched"], errors=counts["errors"],
         message=f"done — {counts['matched']} auto-matched, "
-                f"{counts['review']} need review, {counts['unmatched']} unmatched",
+                f"{counts['review']} need review, "
+                f"{counts['unmatched']} unmatched{err_suffix}",
     ))
     return counts
 
