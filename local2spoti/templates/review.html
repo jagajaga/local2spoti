@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Review - Local2Spoti{% endblock %}
+{% block content %}
+<div class="mb-4 flex gap-2">
+  <button id="bulk-approve"
+          hx-post="/api/review/approve_top_visible"
+          hx-include="#review-grid input[name='file_ids']"
+          hx-swap="none"
+          class="px-3 py-2 bg-emerald-600 rounded">
+    Approve top candidate for all visible
+  </button>
+</div>
+<form id="review-grid" class="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+  {% for card in cards %}
+  <div class="bg-zinc-900 rounded-lg p-4 space-y-3" id="card-{{ card.file.id }}">
+    <input type="hidden" name="file_ids" value="{{ card.file.id }}">
+    <div>
+      <div class="text-xs text-zinc-400">Local</div>
+      <div class="font-semibold">{{ card.file.artist }} — {{ card.file.title }}</div>
+      <div class="text-xs text-zinc-500">{{ card.file.album or "" }}</div>
+    </div>
+    {% if card.candidates %}
+    <div class="space-y-1">
+      {% for c in card.candidates %}
+      <label class="flex items-start gap-2 text-sm">
+        <input type="radio" name="cand-{{ card.file.id }}" value="{{ c.spotify_track_id }}"
+               {% if c.rank == 1 %}checked{% endif %}>
+        <span>
+          {{ c.artist }} — {{ c.title }}
+          <span class="text-zinc-500">({{ "%.0f%%" | format(c.confidence * 100) }})</span>
+        </span>
+      </label>
+      {% endfor %}
+    </div>
+    <div class="flex gap-2">
+      <button hx-post="/api/review/approve"
+              hx-vals='js:{file_id: {{ card.file.id }}, track_id: document.querySelector("input[name=cand-{{ card.file.id }}]:checked").value}'
+              hx-target="#card-{{ card.file.id }}" hx-swap="outerHTML"
+              class="px-2 py-1 bg-emerald-600 rounded text-xs">Approve</button>
+      <button hx-post="/api/review/skip"
+              hx-vals='js:{file_id: {{ card.file.id }}}'
+              hx-target="#card-{{ card.file.id }}" hx-swap="outerHTML"
+              class="px-2 py-1 bg-zinc-700 rounded text-xs">Skip</button>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</form>
+{% endblock %}

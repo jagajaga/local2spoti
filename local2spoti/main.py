@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import load_settings
 from .db import connect, init_schema
+from .routes.api import router as api_router
 from .routes.ui import router as ui_router
 from .state import AppState
 
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
         return JSONResponse({"status": "ok"})
 
     app.include_router(ui_router)
+    app.include_router(api_router)
 
     return app
 

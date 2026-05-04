@@ -68,3 +68,40 @@ async def files(
             "limit": limit,
         },
     )
+
+
+@router.get("/review", response_class=HTMLResponse)
+async def review(request: Request, offset: int = 0, limit: int = 50) -> HTMLResponse:
+    state = request.app.state.app_state
+    files = await repo.list_files_by_status(state.db_conn, FileStatus.REVIEW,
+                                             limit=limit, offset=offset)
+    cards = []
+    for f in files:
+        cur = await state.db_conn.execute(
+            """SELECT spotify_track_id, spotify_artist, spotify_title, spotify_album,
+                      confidence, artist_similarity, title_similarity, rank
+               FROM match_candidate WHERE local_file_id=? ORDER BY rank LIMIT 5""",
+            (f.id,),
+        )
+        candidates = [
+            {"spotify_track_id": r[0], "artist": r[1], "title": r[2], "album": r[3],
+             "confidence": r[4], "artist_sim": r[5], "title_sim": r[6], "rank": r[7]}
+            for r in await cur.fetchall()
+        ]
+        cards.append({"file": f, "candidates": candidates})
+    return _templates().TemplateResponse(
+        request, "review.html",
+        {"cards": cards, "offset": offset, "limit": limit},
+    )
+
+
+@router.get("/unmatched", response_class=HTMLResponse)
+async def unmatched(request: Request, offset: int = 0, limit: int = 100) -> HTMLResponse:
+    state = request.app.state.app_state
+    files = await repo.list_files_by_status(state.db_conn, FileStatus.UNMATCHED,
+                                             limit=limit, offset=offset)
+    return _templates().TemplateResponse(
+        request, "files.html",
+        {"files": files, "status": "unmatched",
+         "statuses": [s.value for s in FileStatus], "offset": offset, "limit": limit},
+    )
