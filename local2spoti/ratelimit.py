@@ -42,3 +42,11 @@ class TokenBucket:
     def pause_for(self, seconds: float) -> None:
         self._pause_until = max(self._pause_until, time.monotonic() + seconds)
         self.drain()
+
+    def pause_remaining(self) -> float:
+        """Seconds until the pause expires; 0 if not paused.
+
+        Used by the match heartbeat to surface 'rate-limited, X seconds
+        remaining' instead of just 'stalled, who knows why'.
+        """
+        return max(0.0, self._pause_until - time.monotonic())

@@ -16,8 +16,15 @@ class AppState:
     settings: Settings
     db_conn: aiosqlite.Connection | None = None
     bus: EventBus = field(default_factory=lambda: EventBus(min_interval=0.1))
+    # Spotify rate limit: documented sustained ~180 req/min (3/sec). In
+    # practice their per-endpoint or burst limits trip 429s well before
+    # that, especially on /search. Tuned down to 2/sec sustained + 15-token
+    # burst — keeps under their threshold while still ~120 calls/min.
+    # Each 429 we hit pauses the whole bucket for Retry-After seconds, so
+    # avoiding 429s in the first place is much faster than 'go faster +
+    # hope nothing trips'.
     spotify_bucket: TokenBucket = field(
-        default_factory=lambda: TokenBucket(rate=3.0, capacity=30.0)
+        default_factory=lambda: TokenBucket(rate=2.0, capacity=15.0)
     )
     # Three independent task slots so a Spotify match, an AcoustID deep
     # scan, and an AI matching run can all be in flight simultaneously.

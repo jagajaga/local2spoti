@@ -196,6 +196,7 @@ async def _stage_match(
         bus=bus, counts=counts, total=total,
         get_processed=lambda: processed,
         current_artists=current_artists,
+        bucket=client._bucket,  # for pause-remaining reporting
         stop=heartbeat_stop,
     ))
 
@@ -233,13 +234,14 @@ async def _match_heartbeat(
     total: int,
     get_processed,
     current_artists: set[str],
+    bucket,  # TokenBucket; typed loosely to avoid circular import
     stop: asyncio.Event,
     interval: float = 5.0,
 ) -> None:
     """Fire a status event every `interval` seconds during the match stage.
 
-    Includes throughput and ETA so the user can tell whether things are
-    progressing slowly (rate-limited) vs. genuinely stuck.
+    Includes throughput, ETA, and rate-limit pause status so the user can
+    tell stalled-because-spotify-said-wait apart from genuinely stuck.
     """
     last_processed = 0
     last_time = time.monotonic()
@@ -253,6 +255,7 @@ async def _match_heartbeat(
         now = time.monotonic()
         elapsed = now - last_time
         delta = processed - last_processed
+        pause_remaining = bucket.pause_remaining()
         if delta > 0 and elapsed > 0:
             rate = delta / elapsed
             remaining = max(0, total - processed)
@@ -262,12 +265,20 @@ async def _match_heartbeat(
                 f"{_fmt_duration(eta_sec)}, "
                 f"{len(current_artists)} workers active"
             )
+            if pause_remaining > 0.5:
+                msg += f", rate-limited {pause_remaining:.0f}s remaining"
         else:
             active = ", ".join(sorted(current_artists))[:80] or "—"
-            msg = (
-                f"alive but stalled (likely rate-limited), "
-                f"{len(current_artists)} workers waiting on: {active}"
-            )
+            if pause_remaining > 0.5:
+                msg = (
+                    f"rate-limited by Spotify — pause expires in "
+                    f"{pause_remaining:.0f}s, {len(current_artists)} workers parked"
+                )
+            else:
+                msg = (
+                    f"slow tick — {len(current_artists)} workers in flight, "
+                    f"current: {active}"
+                )
         await bus.publish(ProgressEvent(
             stage="match", processed=processed, total=total,
             matched=counts["matched"], review=counts["review"],
