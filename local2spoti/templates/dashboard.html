@@ -4,8 +4,13 @@
 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
   <section class="bg-zinc-900 rounded-lg p-5">
     <h2 class="text-lg font-semibold mb-3">Library</h2>
-    <p class="text-sm text-zinc-400">Root: <code>{{ library_root or "(not set)" }}</code></p>
-    <p class="text-sm text-zinc-400">Files in DB: {{ total_files }}</p>
+    <form hx-post="/api/library" hx-swap="none" class="space-y-2">
+      <input type="text" name="path" value="{{ library_root or '' }}"
+             placeholder="/path/to/your/music"
+             class="w-full bg-zinc-800 px-3 py-2 rounded text-sm">
+      <button class="px-3 py-1 bg-zinc-700 rounded text-sm">Save</button>
+    </form>
+    <p class="text-sm text-zinc-400 mt-2">Files in DB: {{ total_files }}</p>
     <p class="text-sm text-zinc-400">Last scan: {{ last_scan_at or "never" }}</p>
   </section>
   <section class="bg-zinc-900 rounded-lg p-5">

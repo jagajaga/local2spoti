@@ -73,6 +73,21 @@ async def set_threshold(request: Request, threshold: str = Form(...)) -> JSONRes
     return JSONResponse({"ok": True, "threshold": threshold})
 
 
+@router.post("/library")
+async def set_library(request: Request, path: str = Form(...)) -> JSONResponse:
+    p = Path(path).expanduser().resolve()
+    if not p.is_dir():
+        return JSONResponse({"error": "not a directory"}, status_code=400)
+    state = request.app.state.app_state
+    state.settings.library_root = p
+    await state.db_conn.execute(
+        "INSERT OR REPLACE INTO setting (key, value) VALUES ('library_root', ?)",
+        (str(p),),
+    )
+    await state.db_conn.commit()
+    return JSONResponse({"library_root": str(p)})
+
+
 @router.post("/scan/start")
 async def scan_start(request: Request) -> JSONResponse:
     state = request.app.state.app_state
