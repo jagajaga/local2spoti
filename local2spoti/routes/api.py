@@ -7,6 +7,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import JSONResponse
 
 from .. import repo
+from ..acoustid import AcoustidClient, fingerprint, fpcalc_available
 from ..matcher import Threshold
 from ..models import FileStatus
 from ..pipeline import run_scan
@@ -131,6 +132,44 @@ async def push(request: Request) -> JSONResponse:
     finally:
         await client.aclose()
     return JSONResponse({"playlists_created": result.playlists_created, "added": result.added})
+
+
+@router.post("/deep_scan")
+async def deep_scan(request: Request) -> JSONResponse:
+    state = request.app.state.app_state
+    if not fpcalc_available():
+        return JSONResponse({"error": "fpcalc not installed"}, status_code=400)
+    if not state.settings.acoustid_api_key:
+        return JSONResponse({"error": "acoustid_api_key not set"}, status_code=400)
+
+    cur = await state.db_conn.execute(
+        "SELECT id, path, duration_ms FROM local_file WHERE status='unmatched' LIMIT 200"
+    )
+    rows = await cur.fetchall()
+    if not rows:
+        return JSONResponse({"updated": 0})
+
+    acoustid = AcoustidClient(api_key=state.settings.acoustid_api_key)
+    updated = 0
+    try:
+        for fid, path_str, _dur_ms in rows:
+            fp = await fingerprint(Path(path_str))
+            if fp is None:
+                continue
+            dur, fingerprint_str = fp
+            md = await acoustid.lookup(fingerprint=fingerprint_str, duration=dur)
+            if md is None:
+                continue
+            await state.db_conn.execute(
+                """UPDATE local_file SET artist=?, title=?, status='scanned',
+                   metadata_source='acoustid' WHERE id=?""",
+                (md.artist, md.title, fid),
+            )
+            await state.db_conn.commit()
+            updated += 1
+    finally:
+        await acoustid.aclose()
+    return JSONResponse({"updated": updated})
 
 
 import secrets
