@@ -265,7 +265,7 @@ async def push(request: Request) -> JSONResponse:
 
 
 @router.post("/deep_scan")
-async def deep_scan(request: Request, limit: int = 200) -> JSONResponse:
+async def deep_scan(request: Request, limit: int = 100000) -> JSONResponse:
     """Kick off an AcoustID deep scan as a background task.
 
     Returns immediately so the UI doesn't block; progress events stream over
@@ -367,7 +367,7 @@ async def deep_scan(request: Request, limit: int = 200) -> JSONResponse:
 
 
 @router.post("/ai_scan")
-async def ai_scan(request: Request, batch_size: int = 20, limit: int = 100) -> JSONResponse:
+async def ai_scan(request: Request, batch_size: int = 20, limit: int = 100000) -> JSONResponse:
     """Kick off Claude metadata identification as a background task.
 
     Returns immediately. Progress events stream over the WebSocket and surface
