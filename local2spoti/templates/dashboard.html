@@ -78,7 +78,7 @@
       {% endfor %}
     </form>
 
-    <div class="flex gap-2 items-center mb-3">
+    <div class="flex gap-2 items-center mb-3 flex-wrap">
       <button type="button"
               hx-post="/api/scan/start"
               hx-target="#scan-status"
@@ -92,7 +92,15 @@
               hx-target="#scan-status"
               hx-swap="innerHTML"
               class="px-4 py-2 bg-red-700 rounded">
-        Cancel
+        Stop
+      </button>
+      <button type="button"
+              hx-post="/api/reset"
+              hx-target="#scan-status"
+              hx-swap="innerHTML"
+              hx-confirm="Reset will delete ALL scan state from the database (files, matches, playlists, scan history). Spotify connection and settings are kept. Continue?"
+              class="px-4 py-2 bg-zinc-700 rounded">
+        Reset
       </button>
       <span id="scan-status" class="text-xs text-zinc-400 ml-2"></span>
     </div>

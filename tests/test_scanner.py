@@ -74,3 +74,55 @@ def test_walk_returns_parents(tmp_path):
     f.touch()
     [(_, parents)] = list(walk_audio_files(tmp_path))
     assert parents == ("B", "A")
+
+
+def test_walk_skips_appledouble_files(tmp_path):
+    """._*.mp3 sidecars (macOS AppleDouble) on non-HFS volumes must be skipped."""
+    (tmp_path / "Album").mkdir()
+    (tmp_path / "Album" / "Real Track.mp3").touch()
+    (tmp_path / "Album" / "._Real Track.mp3").touch()
+    (tmp_path / "Album" / "._Other.flac").touch()
+    (tmp_path / "._Top Level.mp3").touch()
+
+    from local2spoti.scanner import walk_audio_files
+    out = sorted(p.name for p, _ in walk_audio_files(tmp_path))
+    assert out == ["Real Track.mp3"]
+
+
+def test_walk_skips_dot_directories(tmp_path):
+    """Dot-prefixed directories (.Trashes, .Spotlight-V100, .fseventsd) must be skipped."""
+    (tmp_path / "Music").mkdir()
+    (tmp_path / "Music" / "song.mp3").touch()
+    (tmp_path / ".Trashes").mkdir()
+    (tmp_path / ".Trashes" / "junk.mp3").touch()
+    (tmp_path / ".Spotlight-V100").mkdir()
+    (tmp_path / ".Spotlight-V100" / "x.mp3").touch()
+
+    from local2spoti.scanner import walk_audio_files
+    out = sorted(p.name for p, _ in walk_audio_files(tmp_path))
+    assert out == ["song.mp3"]
+
+
+def test_walk_skips_ds_store_and_iTunes_metadata(tmp_path):
+    """Both .DS_Store and .iTunes-*.plist style names get filtered."""
+    (tmp_path / "track.mp3").touch()
+    (tmp_path / ".DS_Store").touch()
+    (tmp_path / "._.iTunes Preferences.plist").touch()
+    (tmp_path / "._iTunes Library.itl").touch()
+
+    from local2spoti.scanner import walk_audio_files
+    out = sorted(p.name for p, _ in walk_audio_files(tmp_path))
+    assert out == ["track.mp3"]
+
+
+def test_is_hidden_classifier():
+    """Pure unit: covers every prefix we need to filter."""
+    from local2spoti.scanner import _is_hidden
+    assert _is_hidden(".DS_Store")
+    assert _is_hidden("._Track.mp3")
+    assert _is_hidden(".Spotlight-V100")
+    assert _is_hidden(".Trashes")
+    assert _is_hidden(".fseventsd")
+    assert not _is_hidden("Track.mp3")
+    assert not _is_hidden("Album Cover.jpg")
+    assert not _is_hidden("01 - Song.flac")

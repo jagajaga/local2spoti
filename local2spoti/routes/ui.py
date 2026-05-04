@@ -48,15 +48,14 @@ async def dashboard(request: Request) -> HTMLResponse:
 async def files(
     request: Request,
     status: str = Query("matched"),
-    offset: int = 0,
-    limit: int = 100,
+    limit: int = 100000,  # effectively unbounded for typical libraries
 ) -> HTMLResponse:
     state = request.app.state.app_state
     try:
         st = FileStatus(status)
     except ValueError:
         st = FileStatus.MATCHED
-    files = await repo.list_files_by_status(state.db_conn, st, limit=limit, offset=offset)
+    files = await repo.list_files_by_status(state.db_conn, st, limit=limit, offset=0)
     return _templates().TemplateResponse(
         request,
         "files.html",
@@ -64,8 +63,6 @@ async def files(
             "files": files,
             "status": status,
             "statuses": [s.value for s in FileStatus],
-            "offset": offset,
-            "limit": limit,
         },
     )
 

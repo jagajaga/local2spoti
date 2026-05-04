@@ -74,6 +74,30 @@ async def set_threshold(request: Request, threshold: str = Form(...)) -> JSONRes
     return JSONResponse({"ok": True, "threshold": threshold})
 
 
+@router.post("/reset")
+async def reset(request: Request) -> JSONResponse:
+    """Wipe all scan state (files, candidates, playlists, scan runs).
+
+    Preserves:
+      - auth_token (so you don't have to re-OAuth)
+      - setting (library_root, threshold, etc.)
+    """
+    state = request.app.state.app_state
+    if state.scan_task and not state.scan_task.done():
+        return JSONResponse(
+            {"error": "scan running — stop it first"}, status_code=409,
+        )
+    conn = state.db_conn
+    # Order matters: children before parents (FKs cascade but be explicit)
+    await conn.execute("DELETE FROM playlist_track")
+    await conn.execute("DELETE FROM playlist")
+    await conn.execute("DELETE FROM match_candidate")
+    await conn.execute("DELETE FROM local_file")
+    await conn.execute("DELETE FROM scan_run")
+    await conn.commit()
+    return JSONResponse({"ok": True})
+
+
 @router.post("/library")
 async def set_library(request: Request, path: str = Form(...)) -> JSONResponse:
     p = Path(path).expanduser().resolve()
