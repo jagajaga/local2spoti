@@ -95,6 +95,11 @@ async def review(request: Request, offset: int = 0, limit: int = 50) -> HTMLResp
     )
 
 
+@router.get("/scan", response_class=HTMLResponse)
+async def scan(request: Request) -> HTMLResponse:
+    return _templates().TemplateResponse(request, "scan.html", {})
+
+
 @router.get("/unmatched", response_class=HTMLResponse)
 async def unmatched(request: Request, offset: int = 0, limit: int = 100) -> HTMLResponse:
     state = request.app.state.app_state

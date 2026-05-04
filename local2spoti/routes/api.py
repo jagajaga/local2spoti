@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
+
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import JSONResponse
 
 from .. import repo
+from ..matcher import Threshold
 from ..models import FileStatus
+from ..pipeline import run_scan
+from ..spotify_client import SpotifyClient
 
 router = APIRouter(prefix="/api")
 
@@ -62,3 +68,47 @@ async def set_threshold(request: Request, threshold: str = Form(...)) -> JSONRes
     )
     await state.db_conn.commit()
     return JSONResponse({"ok": True, "threshold": threshold})
+
+
+@router.post("/scan/start")
+async def scan_start(request: Request) -> JSONResponse:
+    state = request.app.state.app_state
+    if state.scan_task and not state.scan_task.done():
+        return JSONResponse({"error": "scan already running"}, status_code=409)
+    if not state.settings.library_root:
+        return JSONResponse({"error": "library_root not configured"}, status_code=400)
+
+    cur = await state.db_conn.execute(
+        "SELECT access_token FROM auth_token WHERE key='spotify'"
+    )
+    row = await cur.fetchone()
+    if not row:
+        return JSONResponse({"error": "Spotify not connected"}, status_code=400)
+    access_token = row[0]
+
+    threshold = Threshold(state.settings.threshold)
+    client = SpotifyClient(access_token=access_token, bucket=state.spotify_bucket)
+    state.cancel_event.clear()
+
+    async def _run() -> None:
+        try:
+            await run_scan(
+                conn=state.db_conn, client=client,
+                library_root=Path(state.settings.library_root),
+                threshold=threshold, bus=state.bus,
+            )
+        finally:
+            await client.aclose()
+
+    state.scan_task = asyncio.create_task(_run())
+    return JSONResponse({"ok": True})
+
+
+@router.post("/scan/cancel")
+async def scan_cancel(request: Request) -> JSONResponse:
+    state = request.app.state.app_state
+    if state.scan_task and not state.scan_task.done():
+        state.cancel_event.set()
+        state.scan_task.cancel()
+        return JSONResponse({"ok": True})
+    return JSONResponse({"error": "no scan running"}, status_code=400)

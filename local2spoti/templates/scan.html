@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Scan - Local2Spoti{% endblock %}
+{% block content %}
+<div class="space-y-4" hx-ext="ws" ws-connect="/ws/progress">
+  <h1 class="text-xl font-semibold">Scan</h1>
+  <div id="stage" class="text-sm text-zinc-400">Waiting…</div>
+  <div class="bg-zinc-900 rounded-lg overflow-hidden">
+    <div id="bar" class="bg-emerald-600 h-3" style="width:0"></div>
+  </div>
+  <div id="counts" class="grid grid-cols-4 gap-2 text-center text-sm">
+    <div class="bg-zinc-800 rounded p-2"><div id="c-matched">0</div><div class="text-xs text-zinc-400">matched</div></div>
+    <div class="bg-zinc-800 rounded p-2"><div id="c-review">0</div><div class="text-xs text-zinc-400">review</div></div>
+    <div class="bg-zinc-800 rounded p-2"><div id="c-unmatched">0</div><div class="text-xs text-zinc-400">unmatched</div></div>
+    <div class="bg-zinc-800 rounded p-2"><div id="c-errors">0</div><div class="text-xs text-zinc-400">errors</div></div>
+  </div>
+  <form action="/api/scan/cancel" method="post"><button class="mt-4 px-3 py-1 bg-red-700 rounded">Cancel</button></form>
+</div>
+<script>
+  document.body.addEventListener("htmx:wsAfterMessage", (evt) => {
+    const e = JSON.parse(evt.detail.message);
+    document.getElementById("stage").textContent = `${e.stage}: ${e.processed}/${e.total}`;
+    if (e.total > 0) {
+      document.getElementById("bar").style.width = `${Math.round(100 * e.processed / e.total)}%`;
+    }
+    if (e.matched !== undefined) document.getElementById("c-matched").textContent = e.matched;
+    if (e.review !== undefined) document.getElementById("c-review").textContent = e.review;
+    if (e.unmatched !== undefined) document.getElementById("c-unmatched").textContent = e.unmatched;
+    if (e.errors !== undefined) document.getElementById("c-errors").textContent = e.errors;
+  });
+</script>
+{% endblock %}
