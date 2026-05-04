@@ -95,6 +95,15 @@
         Stop
       </button>
       <button type="button"
+              hx-post="/api/push"
+              hx-target="#scan-status"
+              hx-swap="innerHTML"
+              hx-confirm="Push every matched file to Spotify? Splits into chunked playlists (max 9000 tracks each)."
+              class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+              {% if not spotify_user %}disabled title="Connect Spotify first"{% endif %}>
+        Push to Spotify
+      </button>
+      <button type="button"
               hx-post="/api/reset"
               hx-target="#scan-status"
               hx-swap="innerHTML"

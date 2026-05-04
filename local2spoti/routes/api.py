@@ -7,14 +7,17 @@ from pathlib import Path
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from datetime import UTC, datetime as _dt
+
 from .. import repo
 from ..acoustid import AcoustidClient, AcoustidError, fingerprint, fpcalc_available
 from ..ai_match import AIClient
 from ..events import ProgressEvent
 from ..matcher import Threshold
 from ..models import FileStatus
-from ..pipeline import run_scan
+from ..pipeline import _stage_match, run_scan
 from ..playlist import push_matched_to_spotify
+from ..recovery import ai_scan_unmatched, count_unmatched, deep_scan_unmatched
 from ..spotify_client import SpotifyClient
 
 router = APIRouter(prefix="/api")
@@ -230,17 +233,64 @@ async def scan_start(request: Request) -> JSONResponse:
         state.cancel_event.clear()
 
     async def _run() -> None:
+        """Smart Start scan — full pipeline + automatic recovery passes.
+
+        Phases (each emits its own bar, all share the same scan_task slot):
+          1. Standard scan (discovery + metadata + match)
+          2. If unmatched files remain AND AcoustID configured →
+             deep_scan_unmatched, then re-run the match stage on the newly
+             promoted 'scanned' files.
+          3. If unmatched files STILL remain AND ANTHROPIC_API_KEY is set →
+             ai_scan_unmatched, then re-run match.
+
+        Each phase stops on cancel_event. If neither key is set, phases
+        2-3 are skipped and you just get the standard scan.
+        """
         try:
             await run_scan(
                 conn=state.db_conn, client=client,
                 library_root=Path(state.settings.library_root),
                 threshold=threshold, bus=state.bus,
             )
+            if state.cancel_event.is_set():
+                return
+
+            # Phase 2: AcoustID rescue
+            if (
+                fpcalc_available()
+                and state.settings.acoustid_api_key
+                and await count_unmatched(state.db_conn) > 0
+            ):
+                await deep_scan_unmatched(state)
+                if state.cancel_event.is_set():
+                    return
+                await _stage_match(
+                    state.db_conn, client, threshold,
+                    bus=state.bus, now=_dt.now(UTC),
+                )
+                if state.cancel_event.is_set():
+                    return
+
+            # Phase 3: AI rescue
+            if (
+                os.environ.get("ANTHROPIC_API_KEY")
+                and await count_unmatched(state.db_conn) > 0
+            ):
+                await ai_scan_unmatched(state)
+                if state.cancel_event.is_set():
+                    return
+                await _stage_match(
+                    state.db_conn, client, threshold,
+                    bus=state.bus, now=_dt.now(UTC),
+                )
         finally:
             await client.aclose()
 
     state.scan_task = asyncio.create_task(_run())
-    return JSONResponse({"ok": True, "message": "Spotify scan started"})
+    return JSONResponse({
+        "ok": True,
+        "message": "Smart scan started — will auto-run AcoustID + AI on whatever stays unmatched",
+    })
 
 
 @router.post("/scan/cancel")
@@ -285,10 +335,9 @@ async def push(request: Request) -> JSONResponse:
 async def deep_scan(request: Request, limit: int = 100000) -> JSONResponse:
     """Kick off an AcoustID deep scan as a background task.
 
-    Runs in its own slot, so it can execute in parallel with /api/scan/start
-    and /api/ai_scan. Race guard: each file is re-checked against the DB
-    before fingerprinting in case another concurrent job (AI scan) already
-    moved it out of the unmatched pool.
+    Runs in its own task slot so it can execute in parallel with /api/scan/start
+    and /api/ai_scan. The actual loop body lives in `recovery.deep_scan_unmatched`
+    so the smart Start-scan flow can chain it.
     """
     state = request.app.state.app_state
     if not fpcalc_available():
@@ -300,103 +349,13 @@ async def deep_scan(request: Request, limit: int = 100000) -> JSONResponse:
             {"error": "Deep scan already running — stop it first"},
             status_code=409,
         )
-
-    cur = await state.db_conn.execute(
-        "SELECT id, path, duration_ms FROM local_file WHERE status='unmatched' LIMIT ?",
-        (limit,),
-    )
-    rows = await cur.fetchall()
-    if not rows:
-        return JSONResponse(
-            {"ok": True, "updated": 0, "message": "No unmatched files to deep-scan"}
-        )
-    total = len(rows)
-
-    async def _run() -> None:
-        acoustid = AcoustidClient(api_key=state.settings.acoustid_api_key)
-        # Per-file outcomes — without this breakdown we couldn't tell
-        # "0 matched" from "API key invalid" from "fpcalc segfaulted".
-        outcomes = {"matched": 0, "no_match": 0, "fpcalc_failed": 0, "api_error": 0}
-        processed = 0
-        await state.bus.publish(ProgressEvent(
-            stage="deep_scan", processed=0, total=total,
-            message=f"fingerprinting {total} files",
-        ))
-        try:
-            for fid, path_str, _dur_ms in rows:
-                if state.cancel_event.is_set():
-                    await state.bus.publish(ProgressEvent(
-                        stage="deep_scan", processed=processed, total=total,
-                        message="cancelled",
-                    ))
-                    return
-                # Race guard: another concurrent job (e.g. AI scan) may have
-                # already promoted this file out of `unmatched`. Skip it
-                # before doing the expensive fingerprint+lookup.
-                cur2 = await state.db_conn.execute(
-                    "SELECT status FROM local_file WHERE id=?", (fid,),
-                )
-                row2 = await cur2.fetchone()
-                if row2 is None or row2[0] != "unmatched":
-                    processed += 1
-                    continue
-                fp = await fingerprint(Path(path_str))
-                if fp is None:
-                    outcomes["fpcalc_failed"] += 1
-                else:
-                    dur, fingerprint_str = fp
-                    try:
-                        md = await acoustid.lookup(
-                            fingerprint=fingerprint_str, duration=dur,
-                        )
-                    except AcoustidError as err:
-                        # Bail loudly on auth/quota errors — every other file
-                        # would just hit the same wall.
-                        await state.bus.publish(ProgressEvent(
-                            stage="deep_scan", processed=processed, total=total,
-                            message=f"AcoustID error {err.code}: {err.message} — aborting",
-                        ))
-                        return
-                    if md is None:
-                        outcomes["no_match"] += 1
-                    else:
-                        # Re-tagging the file changes its identity; any
-                        # candidates from a prior match against the old
-                        # artist/title are now misleading.
-                        await repo.clear_candidates(state.db_conn, fid)
-                        await state.db_conn.execute(
-                            """UPDATE local_file SET artist=?, title=?, status='scanned',
-                               metadata_source='acoustid' WHERE id=?""",
-                            (md.artist, md.title, fid),
-                        )
-                        await state.db_conn.commit()
-                        outcomes["matched"] += 1
-                processed += 1
-                await state.bus.publish(ProgressEvent(
-                    stage="deep_scan", processed=processed, total=total,
-                    message=f"matched {outcomes['matched']} / "
-                            f"no_match {outcomes['no_match']} / "
-                            f"fpcalc_failed {outcomes['fpcalc_failed']}",
-                ))
-            await state.bus.publish(ProgressEvent(
-                stage="deep_scan", processed=total, total=total,
-                message=(
-                    f"done — matched {outcomes['matched']}, "
-                    f"no_match {outcomes['no_match']}, "
-                    f"fpcalc_failed {outcomes['fpcalc_failed']}"
-                ),
-            ))
-        finally:
-            await acoustid.aclose()
-            await state.bus.flush()
-
     if not state.any_job_running():
         state.cancel_event.clear()
-    state.deep_scan_task = asyncio.create_task(_run())
+    state.deep_scan_task = asyncio.create_task(deep_scan_unmatched(state, limit=limit))
     return JSONResponse(
         {
             "ok": True,
-            "message": f"Deep scan started — {total} files queued, watch the progress bar",
+            "message": "Deep scan started — watch the progress bar",
         }
     )
 
@@ -419,102 +378,15 @@ async def ai_scan(request: Request, batch_size: int = 20, limit: int = 100000) -
             {"error": "AI scan already running — stop it first"},
             status_code=409,
         )
-
-    cur = await state.db_conn.execute(
-        """SELECT id, path, artist, title, album FROM local_file
-           WHERE status='unmatched' LIMIT ?""",
-        (limit,),
-    )
-    rows = await cur.fetchall()
-    if not rows:
-        return JSONResponse(
-            {"ok": True, "message": "No unmatched files for AI scan"}
-        )
-
-    files = [
-        {"id": r[0], "path": r[1], "artist": r[2], "title": r[3], "album": r[4]}
-        for r in rows
-    ]
-    total = len(files)
-
-    async def _run() -> None:
-        ai = AIClient()  # reads ANTHROPIC_API_KEY + CLAUDE_MODEL from env
-        by_confidence: dict[str, int] = {"high": 0, "medium": 0, "low": 0, "none": 0}
-        updated = 0
-        processed = 0
-        await state.bus.publish(ProgressEvent(
-            stage="ai_scan", processed=0, total=total,
-            message=f"sending {total} files to Claude in batches of {batch_size}",
-        ))
-        try:
-            for i in range(0, total, batch_size):
-                if state.cancel_event.is_set():
-                    await state.bus.publish(ProgressEvent(
-                        stage="ai_scan", processed=processed, total=total,
-                        message="cancelled",
-                    ))
-                    return
-                batch = files[i : i + batch_size]
-                # Race guard: filter out files that another concurrent job
-                # (deep_scan) already promoted out of `unmatched`.
-                ids = [f["id"] for f in batch]
-                placeholders = ",".join("?" * len(ids))
-                cur2 = await state.db_conn.execute(
-                    f"SELECT id FROM local_file "
-                    f"WHERE id IN ({placeholders}) AND status='unmatched'",
-                    ids,
-                )
-                still_unmatched = {r[0] for r in await cur2.fetchall()}
-                skipped_in_batch = len(batch) - len(still_unmatched)
-                batch = [f for f in batch if f["id"] in still_unmatched]
-                if not batch:
-                    processed += skipped_in_batch
-                    continue
-                try:
-                    suggestions = await ai.suggest_metadata(batch)
-                except Exception as e:
-                    await state.bus.publish(ProgressEvent(
-                        stage="ai_scan", processed=processed, total=total,
-                        message=f"failed: {e}",
-                    ))
-                    return
-                for s in suggestions:
-                    by_confidence[s.confidence] = by_confidence.get(s.confidence, 0) + 1
-                    if s.usable:
-                        # Drop stale candidates — see deep_scan comment.
-                        await repo.clear_candidates(state.db_conn, s.file_id)
-                        await state.db_conn.execute(
-                            """UPDATE local_file SET artist=?, title=?, album=?,
-                               status='scanned', metadata_source='ai' WHERE id=?""",
-                            (s.artist, s.title, s.album, s.file_id),
-                        )
-                        updated += 1
-                await state.db_conn.commit()
-                processed += len(batch)
-                await state.bus.publish(ProgressEvent(
-                    stage="ai_scan", processed=processed, total=total,
-                    message=f"updated {updated}, "
-                            f"high {by_confidence['high']} / "
-                            f"medium {by_confidence['medium']} / "
-                            f"low {by_confidence['low']} / "
-                            f"none {by_confidence['none']}",
-                ))
-            await state.bus.publish(ProgressEvent(
-                stage="ai_scan", processed=total, total=total,
-                message=f"done — {updated} files have AI metadata, "
-                        "click Start scan to run Spotify match",
-            ))
-        finally:
-            await ai.aclose()
-            await state.bus.flush()
-
     if not state.any_job_running():
         state.cancel_event.clear()
-    state.ai_scan_task = asyncio.create_task(_run())
+    state.ai_scan_task = asyncio.create_task(
+        ai_scan_unmatched(state, batch_size=batch_size, limit=limit)
+    )
     return JSONResponse(
         {
             "ok": True,
-            "message": f"AI scan started — {total} files queued, watch the progress bar",
+            "message": "AI scan started — watch the progress bar",
         }
     )
 
