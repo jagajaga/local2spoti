@@ -10,6 +10,22 @@ from .ratelimit import TokenBucket
 
 _BASE = "https://api.spotify.com/v1"
 
+# Substrings in 403 response bodies that mean "soft rate limit, back off"
+# rather than a real authorization failure. After Spotify 429s us a few
+# times, follow-up requests start coming back as 403 with this message
+# — they're still about throttling, not geoblocks for specific content.
+_SOFT_RATE_LIMIT_403_HINTS = (
+    "Spotify is unavailable in this country",
+    "rate limit",
+)
+
+
+def _is_soft_rate_limit_403(response: httpx.Response) -> bool:
+    if response.status_code != 403:
+        return False
+    body = response.text
+    return any(hint.lower() in body.lower() for hint in _SOFT_RATE_LIMIT_403_HINTS)
+
 
 class SpotifyError(Exception):
     pass
@@ -62,15 +78,17 @@ class SpotifyClient:
                 content=content,
                 headers={"Content-Type": "application/json"} if json is not None else None,
             )
-            if r.status_code == 429:
-                # Spotify can return huge Retry-After values when seriously
-                # throttled — we've observed 60_000+ s (≈17h). Cap the
-                # local pause at 5 minutes. If they're still angry after
-                # 5 min we'll just take another 429 and pause again, but
-                # at worst that's one probe per 5 min instead of sitting
-                # idle for a full day. The pipeline-level heartbeat keeps
-                # showing the user what's happening.
-                raw_wait = float(r.headers.get("Retry-After", "1"))
+            # Treat both 429 and "Spotify is unavailable in this country"
+            # 403s as soft rate-limit signals. Empirically, Spotify
+            # escalates from 429 → 403-geoblock when our IP keeps hitting
+            # /search after they've started throttling — the message is
+            # misleading but the meaning is the same: "back off, try
+            # later". Same handling: pause the bucket (capped at 5 min)
+            # and retry the request. We do NOT raise — that would make
+            # process_artist mark the file as 'error', but the file is
+            # fine; only Spotify is being grumpy.
+            if r.status_code == 429 or _is_soft_rate_limit_403(r):
+                raw_wait = float(r.headers.get("Retry-After", "60"))
                 wait = min(raw_wait, 300.0)
                 self._bucket.pause_for(wait)
                 continue
