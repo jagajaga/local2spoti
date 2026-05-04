@@ -7,7 +7,6 @@ __pycache__/
 dist/
 build/
 *.egg-info/
-~/.local2spoti/
 state.db
 state.db-wal
 state.db-shm
