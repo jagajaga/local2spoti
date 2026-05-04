@@ -10,6 +10,7 @@ from .. import repo
 from ..matcher import Threshold
 from ..models import FileStatus
 from ..pipeline import run_scan
+from ..playlist import push_matched_to_spotify
 from ..spotify_client import SpotifyClient
 
 router = APIRouter(prefix="/api")
@@ -113,6 +114,23 @@ async def scan_cancel(request: Request) -> JSONResponse:
         state.scan_task.cancel()
         return JSONResponse({"ok": True})
     return JSONResponse({"error": "no scan running"}, status_code=400)
+
+
+@router.post("/push")
+async def push(request: Request) -> JSONResponse:
+    state = request.app.state.app_state
+    cur = await state.db_conn.execute(
+        "SELECT access_token FROM auth_token WHERE key='spotify'"
+    )
+    row = await cur.fetchone()
+    if not row:
+        return JSONResponse({"error": "Spotify not connected"}, status_code=400)
+    client = SpotifyClient(access_token=row[0], bucket=state.spotify_bucket)
+    try:
+        result = await push_matched_to_spotify(conn=state.db_conn, client=client)
+    finally:
+        await client.aclose()
+    return JSONResponse({"playlists_created": result.playlists_created, "added": result.added})
 
 
 import secrets
