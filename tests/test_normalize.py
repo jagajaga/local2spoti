@@ -39,3 +39,16 @@ def test_alpha_bucket():
     assert alpha_bucket("björk") == "B"
     assert alpha_bucket("123 Fake") == "#"
     assert alpha_bucket("") == "#"
+
+
+def test_word_boundary_does_not_strip_inside_words():
+    assert normalize_artist("Daft Punk") == "daft punk"
+    assert normalize_title("Defeated") == "defeated"
+    assert normalize_title("Lifted Up") == "lifted up"
+
+
+def test_empty_and_whitespace_inputs():
+    assert normalize_artist("") == ""
+    assert normalize_title("") == ""
+    assert normalize_artist("   ") == ""
+    assert alpha_bucket("   ") == "#"
