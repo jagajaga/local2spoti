@@ -20,6 +20,8 @@ dependencies = [
     "tomli-w>=1.0",
     "pyacoustid>=1.3",
     "python-multipart>=0.0.18",
+    "anthropic>=0.40",
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]

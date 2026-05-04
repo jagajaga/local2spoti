@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from .. import repo
 from ..acoustid import AcoustidClient, fingerprint, fpcalc_available
+from ..ai_match import AIClient
 from ..matcher import Threshold
 from ..models import FileStatus
 from ..pipeline import run_scan
@@ -266,6 +267,75 @@ async def deep_scan(request: Request) -> JSONResponse:
     finally:
         await acoustid.aclose()
     return JSONResponse({"updated": updated})
+
+
+@router.post("/ai_scan")
+async def ai_scan(request: Request, batch_size: int = 20, limit: int = 100) -> JSONResponse:
+    """Use Claude to identify metadata for unmatched files.
+
+    Reads up to `limit` unmatched files, sends them to Claude in batches of
+    `batch_size`, and writes back any usable artist/title guesses (so the next
+    Spotify match pass can find them). Returns a summary count.
+    """
+    state = request.app.state.app_state
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return JSONResponse(
+            {"error": "ANTHROPIC_API_KEY not set"}, status_code=400,
+        )
+
+    cur = await state.db_conn.execute(
+        """SELECT id, path, artist, title, album FROM local_file
+           WHERE status='unmatched' LIMIT ?""",
+        (limit,),
+    )
+    rows = await cur.fetchall()
+    if not rows:
+        return JSONResponse({"processed": 0, "updated": 0})
+
+    files = [
+        {"id": r[0], "path": r[1], "artist": r[2], "title": r[3], "album": r[4]}
+        for r in rows
+    ]
+
+    ai = AIClient()  # auto-reads ANTHROPIC_API_KEY + CLAUDE_MODEL from env
+    by_confidence: dict[str, int] = {"high": 0, "medium": 0, "low": 0, "none": 0}
+    updated = 0
+    try:
+        for i in range(0, len(files), batch_size):
+            batch = files[i : i + batch_size]
+            try:
+                suggestions = await ai.suggest_metadata(batch)
+            except Exception as e:  # surface to caller, don't crash the loop
+                return JSONResponse(
+                    {"error": f"AI request failed: {e}", "updated": updated},
+                    status_code=502,
+                )
+
+            for s in suggestions:
+                by_confidence[s.confidence] = by_confidence.get(s.confidence, 0) + 1
+                if not s.usable:
+                    continue
+                # Re-queue for Spotify search with the AI's guess.
+                await state.db_conn.execute(
+                    """UPDATE local_file SET artist=?, title=?, album=?,
+                       status='scanned', metadata_source='ai' WHERE id=?""",
+                    (s.artist, s.title, s.album, s.file_id),
+                )
+                updated += 1
+            await state.db_conn.commit()
+    finally:
+        await ai.aclose()
+
+    return JSONResponse(
+        {
+            "processed": len(files),
+            "updated": updated,
+            "by_confidence": by_confidence,
+            "next_step": "Click 'Start scan' to run Spotify match on the AI-updated files."
+            if updated
+            else "No usable suggestions — review unmatched list manually.",
+        }
+    )
 
 
 import secrets

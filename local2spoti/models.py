@@ -18,6 +18,7 @@ class MetadataSource(str, Enum):
     TAGS = "tags"
     FILENAME = "filename"
     ACOUSTID = "acoustid"
+    AI = "ai"
     MANUAL = "manual"
     NONE = "none"
 

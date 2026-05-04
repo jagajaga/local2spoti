@@ -6,9 +6,15 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+
+# Load .env into os.environ before anything else reads it. This lets the
+# Anthropic SDK auto-pick up ANTHROPIC_API_KEY without us threading it through
+# Settings, and respects the user's existing dotenv conventions.
+load_dotenv()
 
 from .config import load_settings
 from .db import connect, init_schema
