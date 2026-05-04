@@ -59,6 +59,13 @@ async def _stage_metadata(conn: aiosqlite.Connection, *, bus: EventBus) -> None:
     rows = await cur.fetchall()
     total = len(rows)
     if total == 0:
+        # Without an event the metadata bar stays "idle" forever even
+        # though the stage actually ran (incremental rescan with no new
+        # files is the common case, so this isn't an error).
+        await bus.publish(ProgressEvent(
+            stage="metadata", processed=0, total=0,
+            message="nothing to extract — no new files since last scan",
+        ))
         return
     loop = asyncio.get_event_loop()
     sem = asyncio.Semaphore(16)
@@ -113,6 +120,10 @@ async def _stage_match(
     )
     rows = await cur.fetchall()
     if not rows:
+        await bus.publish(ProgressEvent(
+            stage="match", processed=0, total=0,
+            message="nothing to match — no scanned files",
+        ))
         return {"matched": 0, "review": 0, "unmatched": 0}
     groups: dict[str, list[LocalFile]] = defaultdict(list)
     for r in rows:
@@ -258,6 +269,11 @@ async def _persist_matches(
 ) -> None:
     for r in results:
         assert r.file.id is not None
+        # Always nuke stale candidates first — without this, a file that
+        # was re-tagged between matches keeps the OLD candidates from when
+        # it had a different artist/title (so a Beach Boys track ends up
+        # showing Beatles candidates from a prior run).
+        await repo.clear_candidates(conn, r.file.id)
         if r.decision == "auto" and r.top_candidate:
             await repo.update_match(
                 conn, r.file.id,

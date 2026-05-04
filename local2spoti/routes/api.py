@@ -360,6 +360,10 @@ async def deep_scan(request: Request, limit: int = 100000) -> JSONResponse:
                     if md is None:
                         outcomes["no_match"] += 1
                     else:
+                        # Re-tagging the file changes its identity; any
+                        # candidates from a prior match against the old
+                        # artist/title are now misleading.
+                        await repo.clear_candidates(state.db_conn, fid)
                         await state.db_conn.execute(
                             """UPDATE local_file SET artist=?, title=?, status='scanned',
                                metadata_source='acoustid' WHERE id=?""",
@@ -477,6 +481,8 @@ async def ai_scan(request: Request, batch_size: int = 20, limit: int = 100000) -
                 for s in suggestions:
                     by_confidence[s.confidence] = by_confidence.get(s.confidence, 0) + 1
                     if s.usable:
+                        # Drop stale candidates — see deep_scan comment.
+                        await repo.clear_candidates(state.db_conn, s.file_id)
                         await state.db_conn.execute(
                             """UPDATE local_file SET artist=?, title=?, album=?,
                                status='scanned', metadata_source='ai' WHERE id=?""",

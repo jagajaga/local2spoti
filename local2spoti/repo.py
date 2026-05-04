@@ -145,6 +145,18 @@ async def set_status(
     await conn.commit()
 
 
+async def clear_candidates(conn: aiosqlite.Connection, file_id: int) -> None:
+    """Drop any prior match_candidate rows for this file.
+
+    Called whenever a file's identity changes (re-tag via AI/AcoustID, fresh
+    Spotify match) so the review queue can't display candidates that were
+    fetched against a now-outdated artist/title.
+    """
+    await conn.execute(
+        "DELETE FROM match_candidate WHERE local_file_id=?", (file_id,),
+    )
+
+
 async def insert_candidates(
     conn: aiosqlite.Connection,
     file_id: int,
