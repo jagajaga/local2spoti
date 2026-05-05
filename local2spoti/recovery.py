@@ -89,6 +89,16 @@ async def deep_scan_unmatched(
             if row2 is None or row2[0] not in statuses:
                 processed += 1
                 continue
+            # Emit "fingerprinting <basename>" before the (potentially
+            # slow) fpcalc + AcoustID + MB chain so the bar shows what
+            # we're working on right now, not just totals from the last
+            # completed file. Truncated to the basename to keep messages
+            # short on the dashboard.
+            current_name = path_str.rsplit("/", 1)[-1][:60]
+            await state.bus.publish(ProgressEvent(
+                stage="deep_scan", processed=processed, total=total,
+                message=f"fingerprinting: {current_name}",
+            ))
             fp = await fingerprint(Path(path_str))
             if fp is None:
                 outcomes["fpcalc_failed"] += 1

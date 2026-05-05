@@ -39,19 +39,38 @@ class AcoustidError(Exception):
         super().__init__(f"AcoustID error {code}: {message}")
 
 
-async def fingerprint(path: Path) -> tuple[int, str] | None:
-    """Run fpcalc and return (duration_seconds, fingerprint) or None on failure."""
+async def fingerprint(path: Path, *, timeout: float = 30.0) -> tuple[int, str] | None:
+    """Run fpcalc and return (duration_seconds, fingerprint) or None on failure.
+
+    Bounded by `timeout` (default 30s). On a slow/corrupt file or a USB
+    drive that's gone unresponsive, fpcalc can hang indefinitely while
+    trying to read the audio stream — without a timeout the entire
+    deep-scan loop appears 'stuck' on whichever file got unlucky.
+    On timeout we kill the subprocess and return None (caller treats it
+    as fpcalc_failed and moves on).
+    """
     if not fpcalc_available():
         return None
     proc = await asyncio.create_subprocess_exec(
         "fpcalc", "-json", str(path),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
-    out, _ = await proc.communicate()
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        try:
+            await proc.wait()
+        except Exception:
+            pass
+        return None
     if proc.returncode != 0:
         return None
-    data = orjson.loads(out)
-    return int(data["duration"]), data["fingerprint"]
+    try:
+        data = orjson.loads(out)
+        return int(data["duration"]), data["fingerprint"]
+    except (ValueError, KeyError):
+        return None
 
 
 class AcoustidClient:
