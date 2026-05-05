@@ -39,9 +39,24 @@
   <section class="bg-zinc-900 rounded-lg p-5">
     <h2 class="text-lg font-semibold mb-3">Spotify</h2>
     {% if spotify_user %}
-      <p class="text-sm">Connected as <strong>{{ spotify_user }}</strong></p>
+      <p class="text-sm mb-3">Connected as <strong>{{ spotify_user }}</strong></p>
+      <div class="flex flex-wrap gap-2">
+        <a href="/auth/login"
+           class="px-3 py-1 bg-emerald-700 hover:bg-emerald-600 rounded text-sm"
+           title="Run the OAuth flow again — useful if the access token gets stuck or you want to switch accounts">
+          Re-login
+        </a>
+        <button hx-post="/api/logout" hx-swap="none"
+                hx-on::after-request="if (event.detail.successful) location.reload()"
+                hx-confirm="Disconnect from Spotify? You'll need to re-authorize before the next scan."
+                class="px-3 py-1 bg-zinc-700 hover:bg-zinc-600 rounded text-sm">
+          Disconnect
+        </button>
+      </div>
     {% else %}
-      <a href="/auth/login" class="inline-block mt-2 px-4 py-2 bg-emerald-600 rounded">Connect Spotify</a>
+      <a href="/auth/login" class="inline-block mt-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded">
+        Login to Spotify
+      </a>
     {% endif %}
   </section>
   <section class="bg-zinc-900 rounded-lg p-5 md:col-span-2">

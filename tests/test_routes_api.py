@@ -318,3 +318,52 @@ async def test_retry_one_error_rejects_non_error_file(tmp_path, monkeypatch):
             r = await c.post("/api/retry_error/1")
     assert r.status_code == 400
     assert "not in error status" in r.json()["error"]
+
+
+async def test_logout_clears_spotify_token(tmp_path, monkeypatch):
+    """POST /api/logout drops the stored Spotify token; re-login at
+    /auth/login afterwards is the expected path."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    db = tmp_path / ".local2spoti" / "state.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    async with connect(db) as conn:
+        await init_schema(conn)
+        await conn.execute(
+            """INSERT INTO auth_token (key, access_token, refresh_token,
+               expires_at, scope, user_id)
+               VALUES ('spotify','at','rt','2099-01-01T00:00:00','x','u')"""
+        )
+        await conn.commit()
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            r = await c.post("/api/logout")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+    async with connect(db) as conn:
+        cur = await conn.execute("SELECT COUNT(*) FROM auth_token WHERE key='spotify'")
+        assert (await cur.fetchone())[0] == 0
+
+
+async def test_logout_blocked_while_job_running(tmp_path, monkeypatch):
+    import asyncio
+    monkeypatch.setenv("HOME", str(tmp_path))
+    db = tmp_path / ".local2spoti" / "state.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    async with connect(db) as conn:
+        await init_schema(conn)
+
+    app = create_app()
+    async with LifespanManager(app):
+        # Plant a fake "running" scan task so logout refuses.
+        async def _block(): await asyncio.sleep(60)
+        app.state.app_state.scan_task = asyncio.create_task(_block())
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+                r = await c.post("/api/logout")
+        finally:
+            app.state.app_state.scan_task.cancel()
+    assert r.status_code == 409
+    assert "stop running jobs" in r.json()["error"].lower()

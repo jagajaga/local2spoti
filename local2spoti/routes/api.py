@@ -311,6 +311,27 @@ async def clear_rate_limit_pause(request: Request) -> JSONResponse:
     })
 
 
+@router.post("/logout")
+async def logout(request: Request) -> JSONResponse:
+    """Drop the stored Spotify OAuth tokens.
+
+    User can re-OAuth via /auth/login afterwards. We refuse if a job is
+    running so we don't yank the token out from under an active match.
+    """
+    state = request.app.state.app_state
+    if state.any_job_running():
+        return JSONResponse(
+            {"error": "stop running jobs first"}, status_code=409,
+        )
+    cur = await state.db_conn.execute(
+        "DELETE FROM auth_token WHERE key='spotify'"
+    )
+    await state.db_conn.commit()
+    return JSONResponse(
+        {"ok": True, "message": f"Disconnected from Spotify ({cur.rowcount} token cleared)"},
+    )
+
+
 @router.post("/retry_error/{file_id}")
 async def retry_one_error(request: Request, file_id: int) -> JSONResponse:
     """Move a single file from status='error' back to 'scanned' and drop
