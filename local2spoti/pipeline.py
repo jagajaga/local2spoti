@@ -154,7 +154,7 @@ async def _stage_match(
                 try:
                     results = await match_artist_group(
                         client=client, artist=files[0].artist or "", files=files,
-                        threshold=threshold,
+                        threshold=threshold, conn=conn,
                     )
                     no_artist_files = [r.file for r in results if r.decision == "no_artist"]
                     if no_artist_files:

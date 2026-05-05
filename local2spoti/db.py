@@ -104,6 +104,24 @@ CREATE TABLE IF NOT EXISTS setting (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- Persisted Spotify artist catalogs. First time we look up an artist we
+-- pay the search + albums + albums-batch cost and store the resulting
+-- track list here keyed by normalized name. Subsequent matches against
+-- the same artist hit this cache instead of the Spotify API — zero
+-- /search pressure on re-scans of the same library.
+--
+-- Cache miss when row is absent OR expires_at < now.
+-- Negative results (artist not found on Spotify) get a row with
+-- spotify_artist_id IS NULL and a shorter TTL so we re-probe sooner.
+CREATE TABLE IF NOT EXISTS artist_catalog (
+  artist_name_normalized TEXT PRIMARY KEY,
+  spotify_artist_id      TEXT,           -- NULL if Spotify had no match for this name
+  spotify_artist_name    TEXT,           -- canonical name as Spotify returned it
+  tracks_json            TEXT,           -- orjson-encoded list of {id, name, album, duration_ms, artists}
+  fetched_at             TEXT NOT NULL,
+  expires_at             TEXT NOT NULL
+);
 """
 
 

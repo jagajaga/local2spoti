@@ -58,25 +58,63 @@ async def match_artist_group(
     artist: str,
     files: list[LocalFile],
     threshold: Threshold,
+    conn=None,  # aiosqlite connection for the artist-catalog cache; optional
 ) -> list[FileMatchResult]:
-    """Match every file in `files` against the Spotify catalog of `artist`."""
-    spotify_artist = await client.search_artist(artist)
-    if spotify_artist is None:
-        return [FileMatchResult(f, "no_artist", None, []) for f in files]
+    """Match every file in `files` against the Spotify catalog of `artist`.
 
-    albums = await client.artist_albums(spotify_artist["id"])
-    album_ids = [a["id"] for a in albums]
-    full_albums = await client.albums_batch(album_ids)
-
+    If `conn` is provided, hits the persistent artist_catalog cache first.
+    On cache miss (or expiry) we fetch from Spotify and store the result;
+    on cache hit we skip the search/albums/albums-batch call chain
+    entirely and run the local rapidfuzz scoring against the cached
+    track list.
+    """
     catalog: list[dict] = []
-    seen_ids: set[str] = set()
-    for alb in full_albums:
-        for t in alb.get("tracks", {}).get("items", []):
-            if t["id"] in seen_ids:
-                continue
-            seen_ids.add(t["id"])
-            t = {**t, "album": {"name": alb.get("name")}}
-            catalog.append(t)
+
+    # Cache check — only when we have a DB handle (some test paths pass None)
+    cached = None
+    if conn is not None:
+        from . import artist_cache
+        cached = await artist_cache.get(conn, artist)
+
+    if cached is not None:
+        if not cached.is_positive:
+            # Negative-result cache: Spotify had no match for this name
+            # last time we asked, and the entry hasn't expired yet.
+            return [FileMatchResult(f, "no_artist", None, []) for f in files]
+        catalog = cached.tracks
+    else:
+        spotify_artist = await client.search_artist(artist)
+        if spotify_artist is None:
+            if conn is not None:
+                from . import artist_cache
+                await artist_cache.put(
+                    conn, artist,
+                    spotify_artist_id=None, spotify_artist_name=None,
+                    tracks=[],
+                )
+            return [FileMatchResult(f, "no_artist", None, []) for f in files]
+
+        albums = await client.artist_albums(spotify_artist["id"])
+        album_ids = [a["id"] for a in albums]
+        full_albums = await client.albums_batch(album_ids)
+
+        seen_ids: set[str] = set()
+        for alb in full_albums:
+            for t in alb.get("tracks", {}).get("items", []):
+                if t["id"] in seen_ids:
+                    continue
+                seen_ids.add(t["id"])
+                t = {**t, "album": {"name": alb.get("name")}}
+                catalog.append(t)
+
+        if conn is not None:
+            from . import artist_cache
+            await artist_cache.put(
+                conn, artist,
+                spotify_artist_id=spotify_artist["id"],
+                spotify_artist_name=spotify_artist.get("name"),
+                tracks=catalog,
+            )
 
     results: list[FileMatchResult] = []
     for f in files:

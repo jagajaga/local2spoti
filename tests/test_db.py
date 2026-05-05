@@ -16,6 +16,7 @@ async def test_schema_creates_all_tables(tmp_path):
         )
         rows = [r[0] for r in await cur.fetchall()]
     assert rows == [
+        "artist_catalog",
         "auth_token",
         "local_file",
         "match_candidate",
