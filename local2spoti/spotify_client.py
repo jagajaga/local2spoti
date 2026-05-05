@@ -21,11 +21,17 @@ _DEFAULT_RATE_LIMIT_PAUSE_SECONDS = 60.0
 _MAX_RATE_LIMIT_PAUSE_SECONDS = 300.0
 
 # Substrings in 403 response bodies that mean "soft rate limit, back off"
-# rather than a real authorization failure. After Spotify 429s us a few
-# times, follow-up requests start coming back as 403 with this message
-# — they're still about throttling, not geoblocks for specific content.
+# rather than a real authorization failure.
+#
+# We deliberately do NOT treat "Spotify is unavailable in this country"
+# as a soft rate limit anymore: in this user's library many tracks
+# (Russian releases, region-locked compilations, podcast-derived
+# content) are genuinely unavailable in their FR market. Retrying them
+# forever would pause the whole bucket every time we hit one and never
+# move past it. Letting those files land in 'error' with that message
+# in last_error is the right outcome — they show up on the error page
+# and the user can decide what to do (skip, manual lookup, etc.).
 _SOFT_RATE_LIMIT_403_HINTS = (
-    "Spotify is unavailable in this country",
     "rate limit",
 )
 

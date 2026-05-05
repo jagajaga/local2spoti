@@ -78,18 +78,36 @@ async def test_429_respects_retry_after(client):
 
 
 @respx.mock
-async def test_403_unavailable_in_country_treated_as_rate_limit(client):
-    """Spotify escalates 429→403-with-geo-message after sustained throttling.
-    The client should treat that as a soft rate limit (pause + retry the
-    same request) rather than raising — the file is fine, only Spotify
-    is being grumpy."""
+async def test_403_unavailable_in_country_raises_as_real_error(client):
+    """A 403 'Spotify is unavailable in this country' is NOT treated as
+    a soft rate limit. Some tracks are genuinely region-locked under
+    the user's account; retrying forever would pause the whole bucket
+    on every region-locked file and never move past it. The right
+    outcome is for that file to land in 'error' with the message
+    visible in last_error so the user can review it."""
+    respx.get("https://api.spotify.com/v1/search").mock(
+        return_value=httpx.Response(
+            403,
+            json={"error": {"status": 403,
+                            "message": "Spotify is unavailable in this country"}},
+        )
+    )
+    with pytest.raises(SpotifyError):
+        await client.search_tracks("a", "b")
+
+
+@respx.mock
+async def test_403_rate_limit_exceeded_still_treated_as_soft_retry(client, monkeypatch):
+    """The 'rate limit' phrasing IS a soft rate limit signal — pause + retry."""
+    monkeypatch.setattr(
+        "local2spoti.spotify_client._DEFAULT_RATE_LIMIT_PAUSE_SECONDS", 0.01,
+    )
     route = respx.get("https://api.spotify.com/v1/search").mock(
         side_effect=[
             httpx.Response(
                 403,
-                headers={"Retry-After": "0"},
                 json={"error": {"status": 403,
-                                "message": "Spotify is unavailable in this country"}},
+                                "message": "API rate limit exceeded"}},
             ),
             httpx.Response(200, json={"tracks": {"items": []}}),
         ]
@@ -125,9 +143,13 @@ def test_soft_rate_limit_403_helper_recognizes_known_messages():
             headers={"content-type": "application/json"},
         )
 
-    assert _is_soft_rate_limit_403(_mk(403,
+    # 'Spotify is unavailable in this country' is intentionally NOT
+    # treated as soft rate limit anymore — see comment on the
+    # _SOFT_RATE_LIMIT_403_HINTS constant.
+    assert not _is_soft_rate_limit_403(_mk(403,
         '{"error":{"status":403,"message":"Spotify is unavailable in this country"}}'))
     assert _is_soft_rate_limit_403(_mk(403, '{"error":"rate limit exceeded"}'))
+    assert _is_soft_rate_limit_403(_mk(403, '{"error":"API rate limit"}'))
     assert not _is_soft_rate_limit_403(_mk(403, '{"error":{"message":"insufficient scope"}}'))
     assert not _is_soft_rate_limit_403(_mk(401, '{"error":"unauthorized"}'))
     assert not _is_soft_rate_limit_403(_mk(200, '{}'))
