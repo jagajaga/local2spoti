@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS local_file (
   title            TEXT,
   album            TEXT,
   track_number     INTEGER,
+  isrc             TEXT,            -- International Standard Recording Code from file tags; lets us hit Spotify with q=isrc:XXX for a deterministic match
   metadata_source  TEXT,
   status           TEXT NOT NULL,
   spotify_track_id TEXT,
@@ -139,4 +140,12 @@ async def connect(path: Path) -> AsyncIterator[aiosqlite.Connection]:
 
 async def init_schema(conn: aiosqlite.Connection) -> None:
     await conn.executescript(SCHEMA)
+    # Lightweight migration: add columns introduced after the first
+    # release. CREATE TABLE IF NOT EXISTS is a no-op on existing DBs, so
+    # new columns won't appear without an explicit ALTER. We probe with
+    # PRAGMA table_info and ALTER if missing — idempotent and cheap.
+    cur = await conn.execute("PRAGMA table_info(local_file)")
+    columns = {row[1] for row in await cur.fetchall()}
+    if "isrc" not in columns:
+        await conn.execute("ALTER TABLE local_file ADD COLUMN isrc TEXT")
     await conn.commit()

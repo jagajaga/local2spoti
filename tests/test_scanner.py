@@ -115,6 +115,52 @@ def test_walk_skips_ds_store_and_iTunes_metadata(tmp_path):
     assert out == ["track.mp3"]
 
 
+from local2spoti.scanner import _parse_isrc
+
+
+def test_parse_isrc_valid():
+    assert _parse_isrc("USRC11234567") == "USRC11234567"
+
+
+def test_parse_isrc_strips_dashes_and_uppercases():
+    """Tagging tools sometimes emit the human-readable form with dashes
+    ('US-RC1-12-34567'); we canonicalize to bare 12-char alphanumeric."""
+    assert _parse_isrc("us-rc1-12-34567") == "USRC11234567"
+
+
+def test_parse_isrc_strips_whitespace():
+    assert _parse_isrc("  USRC1 1234567  ") == "USRC11234567"
+
+
+def test_parse_isrc_handles_list_value():
+    """Mutagen returns tag values as lists; _first picks element 0."""
+    assert _parse_isrc(["USRC11234567"]) == "USRC11234567"
+
+
+def test_parse_isrc_rejects_wrong_length():
+    assert _parse_isrc("US123") is None
+    assert _parse_isrc("USRC112345678") is None  # 13 chars
+
+
+def test_parse_isrc_rejects_empty_and_none():
+    assert _parse_isrc(None) is None
+    assert _parse_isrc("") is None
+    assert _parse_isrc([]) is None
+
+
+def test_read_tags_extracts_isrc_from_id3(make_mp3):
+    """ID3 stores ISRC in the TSRC frame; our EasyID3 registration should
+    surface it via the unified `isrc` key. Real MP3 (via ffmpeg) is
+    required because mutagen needs valid frame headers to read tags."""
+    from mutagen.id3 import ID3, TSRC
+    p = make_mp3("isrc.mp3")
+    tag = ID3(str(p))
+    tag.add(TSRC(encoding=3, text="GBAYE9700675"))
+    tag.save(str(p))
+    md = read_tags(p)
+    assert md.isrc == "GBAYE9700675"
+
+
 def test_is_hidden_classifier():
     """Pure unit: covers every prefix we need to filter."""
     from local2spoti.scanner import _is_hidden

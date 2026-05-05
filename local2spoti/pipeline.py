@@ -98,9 +98,9 @@ async def _stage_metadata(conn: aiosqlite.Connection, *, bus: EventBus) -> None:
                 source = MetadataSource.TAGS.value
             await conn.execute(
                 """UPDATE local_file SET artist=?, title=?, album=?, track_number=?,
-                   duration_ms=?, metadata_source=?, status='scanned' WHERE id=?""",
+                   duration_ms=?, isrc=?, metadata_source=?, status='scanned' WHERE id=?""",
                 (md.artist, md.title, md.album, md.track_number, md.duration_ms,
-                 source, file_id),
+                 md.isrc, source, file_id),
             )
             await conn.commit()
             processed += 1
@@ -116,7 +116,7 @@ async def _stage_match(
     *, bus: EventBus, now: datetime,
 ) -> dict[str, int]:
     cur = await conn.execute(
-        "SELECT id, path, artist, title, album, duration_ms FROM local_file WHERE status='scanned'"
+        "SELECT id, path, artist, title, album, duration_ms, isrc FROM local_file WHERE status='scanned'"
     )
     rows = await cur.fetchall()
     if not rows:
@@ -125,18 +125,79 @@ async def _stage_match(
             message="nothing to match — no scanned files",
         ))
         return {"matched": 0, "review": 0, "unmatched": 0}
+    counts = {"matched": 0, "review": 0, "unmatched": 0, "errors": 0}
+    total = len(rows)
+
+    # ISRC pre-pass: every file that came in with an ISRC tag gets a
+    # single deterministic q=isrc:XXX lookup. Hits land directly on
+    # status='matched' with confidence=1.0 (ISRC is a global recording
+    # identifier — Spotify's index returns the exact track or nothing).
+    # Misses fall through to the artist-grouped flow below. This trades
+    # one /search per ISRC-having file for the otherwise-required
+    # search-artist + albums-list + albums-batch chain (and avoids the
+    # fuzzy review queue for tracks where we already know the answer).
+    isrc_matched_ids: set[int] = set()
+    isrc_files = [r for r in rows if r[6]]
+    if isrc_files:
+        await bus.publish(ProgressEvent(
+            stage="match", processed=0, total=total,
+            message=f"ISRC pre-pass: {len(isrc_files)} files have ISRC tags",
+        ))
+        isrc_sem = asyncio.Semaphore(8)
+
+        async def _isrc_lookup(row) -> None:
+            file_id, _path, _artist, _title, _album, _dur, isrc = row
+            async with isrc_sem:
+                try:
+                    track = await client.search_track_by_isrc(isrc)
+                except Exception:
+                    # Soft fail: the file just falls through to the
+                    # regular artist-grouped flow. ISRC is a fast-path,
+                    # not a guarantee.
+                    return
+                if track is None:
+                    return
+                # Drop any stale candidates from a prior match run before
+                # the deterministic ISRC result lands — keeps the review
+                # queue from showing fuzzy candidates next to a 100%-
+                # confidence match.
+                await repo.clear_candidates(conn, file_id)
+                await repo.update_match(
+                    conn, file_id,
+                    spotify_track_id=track["id"],
+                    confidence=1.0,
+                    method="isrc",
+                )
+                isrc_matched_ids.add(file_id)
+                counts["matched"] += 1
+
+        await asyncio.gather(
+            *[_isrc_lookup(r) for r in isrc_files],
+            return_exceptions=True,
+        )
+        rows = [r for r in rows if r[0] not in isrc_matched_ids]
+        await bus.publish(ProgressEvent(
+            stage="match", processed=len(isrc_matched_ids), total=total,
+            matched=counts["matched"], review=counts["review"],
+            unmatched=counts["unmatched"], errors=counts["errors"],
+            message=(
+                f"ISRC pre-pass done — {len(isrc_matched_ids)} matched "
+                f"directly, {len(isrc_files) - len(isrc_matched_ids)} "
+                f"falling through to artist match"
+            ),
+        ))
+
     groups: dict[str, list[LocalFile]] = defaultdict(list)
     for r in rows:
         f = LocalFile(
             id=r[0], path=r[1], mtime=0, size=0, format="",
             artist=r[2], title=r[3], album=r[4], duration_ms=r[5],
+            isrc=r[6],
             status=FileStatus.SCANNED,
         )
         groups[normalize_artist(r[2] or "")].append(f)
 
-    counts = {"matched": 0, "review": 0, "unmatched": 0, "errors": 0}
-    total = len(rows)
-    processed = 0
+    processed = len(isrc_matched_ids)
     sem = asyncio.Semaphore(12)
     current_artists: set[str] = set()
     heartbeat_stop = asyncio.Event()

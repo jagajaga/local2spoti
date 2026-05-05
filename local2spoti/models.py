@@ -36,6 +36,7 @@ class LocalFile:
     title: str | None = None
     album: str | None = None
     track_number: int | None = None
+    isrc: str | None = None
     metadata_source: str | None = None
     status: FileStatus = FileStatus.NEW
     spotify_track_id: str | None = None

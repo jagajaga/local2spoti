@@ -11,12 +11,12 @@ from .models import FileStatus, LocalFile, MatchCandidate
 _INSERT_FILE = """
 INSERT INTO local_file (
     path, mtime, size, format, duration_ms,
-    artist, title, album, track_number, metadata_source,
+    artist, title, album, track_number, isrc, metadata_source,
     status, spotify_track_id, match_confidence, match_method,
     first_seen_at, last_scanned_at
 ) VALUES (
     :path, :mtime, :size, :format, :duration_ms,
-    :artist, :title, :album, :track_number, :metadata_source,
+    :artist, :title, :album, :track_number, :isrc, :metadata_source,
     :status, :spotify_track_id, :match_confidence, :match_method,
     :first_seen_at, :last_scanned_at
 )
@@ -24,7 +24,7 @@ INSERT INTO local_file (
 
 _SELECT_FILE_BY_PATH = """
 SELECT id, path, mtime, size, format, duration_ms,
-       artist, title, album, track_number, metadata_source,
+       artist, title, album, track_number, isrc, metadata_source,
        status, spotify_track_id, match_confidence, match_method,
        first_seen_at, last_scanned_at, last_error, last_run_id
 FROM local_file WHERE path = ?
@@ -35,11 +35,11 @@ def _row_to_local_file(row: tuple) -> LocalFile:
     return LocalFile(
         id=row[0], path=row[1], mtime=row[2], size=row[3], format=row[4],
         duration_ms=row[5], artist=row[6], title=row[7], album=row[8],
-        track_number=row[9], metadata_source=row[10],
-        status=FileStatus(row[11]), spotify_track_id=row[12],
-        match_confidence=row[13], match_method=row[14],
-        first_seen_at=row[15], last_scanned_at=row[16],
-        last_error=row[17], last_run_id=row[18],
+        track_number=row[9], isrc=row[10], metadata_source=row[11],
+        status=FileStatus(row[12]), spotify_track_id=row[13],
+        match_confidence=row[14], match_method=row[15],
+        first_seen_at=row[16], last_scanned_at=row[17],
+        last_error=row[18], last_run_id=row[19],
     )
 
 
@@ -69,7 +69,8 @@ async def upsert_local_file(
                 "path": f.path, "mtime": f.mtime, "size": f.size, "format": f.format,
                 "duration_ms": f.duration_ms,
                 "artist": f.artist, "title": f.title, "album": f.album,
-                "track_number": f.track_number, "metadata_source": f.metadata_source,
+                "track_number": f.track_number, "isrc": f.isrc,
+                "metadata_source": f.metadata_source,
                 "status": f.status.value, "spotify_track_id": f.spotify_track_id,
                 "match_confidence": f.match_confidence, "match_method": f.match_method,
                 "first_seen_at": iso, "last_scanned_at": iso,

@@ -86,6 +86,96 @@ from local2spoti import repo as _repo
 from local2spoti.spotify_client import SpotifyError
 
 
+async def test_isrc_prepass_short_circuits_artist_match(tmp_path):
+    """A scanned file with an ISRC tag should skip the entire
+    search_artist + albums + albums_batch chain — one ISRC search lands
+    it directly on status='matched' with confidence=1.0."""
+    from local2spoti.db import connect as _connect, init_schema as _init
+    from datetime import UTC as _UTC, datetime as _dt
+    from local2spoti.models import FileStatus as _FS, LocalFile as _LF
+
+    db = tmp_path / "isrc.db"
+    async with _connect(db) as conn:
+        await _init(conn)
+        now = _dt(2026, 5, 5, tzinfo=_UTC)
+        # File with ISRC: should hit the pre-pass.
+        await _repo.upsert_local_file(conn, _LF(
+            path="/has_isrc.mp3", mtime=1, size=1, format="mp3",
+            artist="Daft Punk", title="Around the World",
+            duration_ms=423000, isrc="GBAYE9700675",
+            status=_FS.SCANNED,
+        ), now=now)
+
+        client = _AsyncMock()
+        client.search_track_by_isrc.return_value = {
+            "id": "isrc-track-id", "name": "Around the World",
+            "artists": [{"name": "Daft Punk"}], "duration_ms": 423000,
+        }
+        # If the pre-pass works, none of these should be touched.
+        client.search_artist.return_value = None
+        client.artist_albums.return_value = []
+        client.albums_batch.return_value = []
+
+        result = await __stage_match(
+            conn, client, _Threshold.BALANCED,
+            bus=_EventBus(min_interval=0.0), now=now,
+        )
+        assert result["matched"] == 1
+        # Critically: the artist-grouped path was NEVER consulted.
+        assert client.search_artist.await_count == 0
+        assert client.artist_albums.await_count == 0
+        assert client.albums_batch.await_count == 0
+        assert client.search_track_by_isrc.await_count == 1
+
+        cur = await conn.execute(
+            "SELECT status, spotify_track_id, match_method, match_confidence "
+            "FROM local_file WHERE path='/has_isrc.mp3'"
+        )
+        row = await cur.fetchone()
+        assert row == ("matched", "isrc-track-id", "isrc", 1.0)
+
+
+async def test_isrc_prepass_miss_falls_through_to_artist_match(tmp_path):
+    """If the ISRC search returns no match (e.g. the recording isn't on
+    Spotify by that ISRC), the file falls through to the regular artist
+    match path — no error, no skip."""
+    from local2spoti.db import connect as _connect, init_schema as _init
+    from datetime import UTC as _UTC, datetime as _dt
+    from local2spoti.models import FileStatus as _FS, LocalFile as _LF
+
+    db = tmp_path / "isrc_miss.db"
+    async with _connect(db) as conn:
+        await _init(conn)
+        now = _dt(2026, 5, 5, tzinfo=_UTC)
+        await _repo.upsert_local_file(conn, _LF(
+            path="/orphan.mp3", mtime=1, size=1, format="mp3",
+            artist="DaftPunk", title="Around the World",
+            duration_ms=423000, isrc="ZZ9999999999",
+            status=_FS.SCANNED,
+        ), now=now)
+
+        client = _AsyncMock()
+        client.search_track_by_isrc.return_value = None  # ISRC miss
+        # Artist-match path picks up the slack.
+        client.search_artist.return_value = {"id": "art1", "name": "DaftPunk"}
+        client.artist_albums.return_value = [{"id": "alb1", "name": "Homework"}]
+        client.albums_batch.return_value = [{
+            "id": "alb1", "name": "Homework", "tracks": {"items": [
+                {"id": "t-fallback", "name": "Around the World",
+                 "duration_ms": 423000, "artists": [{"name": "DaftPunk"}]},
+            ]},
+        }]
+
+        result = await __stage_match(
+            conn, client, _Threshold.BALANCED,
+            bus=_EventBus(min_interval=0.0), now=now,
+        )
+        # ISRC was attempted, then artist path matched.
+        assert client.search_track_by_isrc.await_count == 1
+        assert client.search_artist.await_count == 1
+        assert (result["matched"] + result["review"]) >= 1
+
+
 async def test_match_stage_isolates_per_artist_failures(tmp_path):
     """Regression: one artist returning Spotify 403 used to kill the
     entire match stage. Now it should only error that artist's files."""

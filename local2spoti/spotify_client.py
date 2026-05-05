@@ -21,17 +21,11 @@ _DEFAULT_RATE_LIMIT_PAUSE_SECONDS = 60.0
 _MAX_RATE_LIMIT_PAUSE_SECONDS = 300.0
 
 # Substrings in 403 response bodies that mean "soft rate limit, back off"
-# rather than a real authorization failure.
-#
-# We deliberately do NOT treat "Spotify is unavailable in this country"
-# as a soft rate limit anymore: in this user's library many tracks
-# (Russian releases, region-locked compilations, podcast-derived
-# content) are genuinely unavailable in their FR market. Retrying them
-# forever would pause the whole bucket every time we hit one and never
-# move past it. Letting those files land in 'error' with that message
-# in last_error is the right outcome — they show up on the error page
-# and the user can decide what to do (skip, manual lookup, etc.).
+# rather than a real authorization failure. After Spotify 429s us a few
+# times, follow-up requests start coming back as 403 with this message
+# — they're still about throttling, not geoblocks for specific content.
 _SOFT_RATE_LIMIT_403_HINTS = (
+    "Spotify is unavailable in this country",
     "rate limit",
 )
 
@@ -139,6 +133,19 @@ class SpotifyClient:
         q = f'track:"{title}" artist:"{artist}"'
         data = await self._get("/search", q=q, type="track", limit=limit)
         return data.get("tracks", {}).get("items", [])
+
+    async def search_track_by_isrc(self, isrc: str) -> dict[str, Any] | None:
+        """Look up the Spotify track for an ISRC, deterministic & 1-result.
+
+        ISRC is a global recording-id standard that Spotify indexes on, so
+        `q=isrc:<code>` returns the exact track with no fuzzy matching.
+        Returns the track dict on hit, None on miss/empty results.
+        """
+        data = await self._get(
+            "/search", q=f"isrc:{isrc}", type="track", limit=1,
+        )
+        items = data.get("tracks", {}).get("items", [])
+        return items[0] if items else None
 
     async def search_artist(self, name: str) -> dict[str, Any] | None:
         data = await self._get("/search", q=name, type="artist", limit=1)

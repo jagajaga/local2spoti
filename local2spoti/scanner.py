@@ -7,8 +7,23 @@ from pathlib import Path
 from typing import Iterator
 
 import mutagen
+from mutagen.easyid3 import EasyID3
+from mutagen.mp4 import MP4
 
 AUDIO_EXTS = {".mp3", ".flac", ".aac", ".m4a", ".mp4", ".ogg", ".opus", ".wav", ".wma"}
+
+# Register ISRC handler so EasyID3 surfaces TSRC via the unified `isrc`
+# key. Vorbis (FLAC/Ogg/Opus) already exposes 'isrc' through the easy
+# interface natively, so it works without registration. MP4/M4A is the
+# odd one out: EasyMP4 has no freeform-atom helper, so we read the
+# `----:com.apple.iTunes:ISRC` atom directly when the easy read returned
+# nothing (see read_tags).
+try:
+    EasyID3.RegisterTextKey("isrc", "TSRC")
+except (KeyError, ValueError):
+    # Already registered (re-import in tests, etc.) — the call raises if
+    # the key collides with an existing mapping; idempotency-safe to ignore.
+    pass
 
 _PAT_TRACK_ARTIST_TITLE = re.compile(r"^\s*(\d{1,3})\s*[-_.]\s*(.+?)\s*-\s*(.+)$")
 _PAT_ARTIST_TITLE = re.compile(r"^(.+?)\s*-\s*(.+)$")
@@ -50,6 +65,7 @@ class ParsedMetadata:
     album: str | None = None
     track_number: int | None = None
     duration_ms: int | None = None
+    isrc: str | None = None
 
 
 def _first(value: object) -> str | None:
@@ -68,6 +84,20 @@ def _parse_track_no(value: object) -> int | None:
     return int(head) if head.isdigit() else None
 
 
+# ISRC canonical form is 12 alphanumerics: CC (country) + XXX (registrant)
+# + YY (year) + NNNNN (designation). Tags in the wild often arrive with
+# dashes ("US-RC1-12-34567") or padding whitespace; strip them and reject
+# anything that doesn't match the spec so we don't fire bogus queries.
+def _parse_isrc(value: object) -> str | None:
+    s = _first(value)
+    if not s:
+        return None
+    cleaned = "".join(ch for ch in s if ch.isalnum()).upper()
+    if len(cleaned) != 12 or not cleaned.isalnum():
+        return None
+    return cleaned
+
+
 def read_tags(path: Path) -> ParsedMetadata:
     try:
         f = mutagen.File(str(path), easy=True)
@@ -79,13 +109,41 @@ def read_tags(path: Path) -> ParsedMetadata:
     duration_ms: int | None = None
     if f.info and getattr(f.info, "length", None):
         duration_ms = int(f.info.length * 1000)
+    isrc = _parse_isrc(tags.get("isrc"))
+    if isrc is None and path.suffix.lower() in (".m4a", ".mp4", ".aac"):
+        isrc = _read_mp4_isrc(path)
     return ParsedMetadata(
         artist=_first(tags.get("artist")),
         title=_first(tags.get("title")),
         album=_first(tags.get("album")),
         track_number=_parse_track_no(tags.get("tracknumber")),
         duration_ms=duration_ms,
+        isrc=isrc,
     )
+
+
+def _read_mp4_isrc(path: Path) -> str | None:
+    """MP4/iTunes stashes ISRC in a freeform atom. EasyMP4 can't see it
+    without per-key registration, so when the easy interface didn't
+    surface one, fall through to a direct MP4 read."""
+    try:
+        mp4 = MP4(str(path))
+    except Exception:
+        return None
+    if mp4.tags is None:
+        return None
+    raw = mp4.tags.get("----:com.apple.iTunes:ISRC")
+    if not raw:
+        return None
+    # MP4Freeform values are bytes; decode-or-skip without crashing on
+    # mis-tagged bytes that aren't actually UTF-8.
+    val = raw[0]
+    if isinstance(val, bytes):
+        try:
+            val = val.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    return _parse_isrc(val)
 
 
 def _is_hidden(name: str) -> bool:
