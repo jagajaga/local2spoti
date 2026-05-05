@@ -17,6 +17,7 @@ from .acoustid import AcoustidClient, AcoustidError, fingerprint
 from .ai_match import AIClient
 from .events import ProgressEvent
 from .musicbrainz import MusicBrainzClient
+from .songlink import SongLinkClient
 
 if TYPE_CHECKING:
     from .state import AppState
@@ -51,6 +52,7 @@ async def deep_scan_unmatched(
     outcomes = {
         "matched": 0,        # AcoustID identified artist/title (sent to Spotify search later)
         "mb_direct": 0,      # MusicBrainz had a Spotify URL → straight to status='matched'
+        "odesli": 0,         # MB had a non-Spotify URL → Odesli resolved to Spotify
         "no_match": 0,
         "fpcalc_failed": 0,
     }
@@ -72,6 +74,10 @@ async def deep_scan_unmatched(
     # bypassing /v1/search entirely for tracks MB has registered. Free,
     # 1 req/sec rate-limited internally.
     musicbrainz = MusicBrainzClient()
+    # Odesli/SongLink: when MB has an Apple/Deezer/Tidal/etc URL but no
+    # Spotify URL, Odesli does the cross-platform translation. Free,
+    # 10 rpm public limit honored internally.
+    songlink = SongLinkClient()
     try:
         for fid, path_str, _dur_ms in rows:
             if state.cancel_event.is_set():
@@ -115,27 +121,42 @@ async def deep_scan_unmatched(
                 if md is None:
                     outcomes["no_match"] += 1
                 else:
-                    # Try the MB → Spotify URL shortcut first. If it
-                    # resolves we go directly to status='matched' with
-                    # the Spotify track ID set, no /v1/search call ever.
+                    # Try the MB → Spotify URL shortcut first. If MB has
+                    # no Spotify URL but does have an Apple/Deezer/Tidal
+                    # URL, ask Odesli to convert it. Either path lands
+                    # directly on status='matched' with a Spotify track
+                    # ID, no /v1/search call ever.
                     spotify_track_id: str | None = None
+                    match_method = "musicbrainz"
+                    metadata_source = "musicbrainz"
                     if md.recording_id:
-                        spotify_track_id = await musicbrainz.spotify_track_id_for_mbid(
-                            md.recording_id,
-                        )
+                        mb_res = await musicbrainz.resolve_mbid(md.recording_id)
+                        if mb_res.spotify_track_id:
+                            spotify_track_id = mb_res.spotify_track_id
+                        elif mb_res.odesli_url:
+                            spotify_track_id = await songlink.spotify_track_id_from_url(
+                                mb_res.odesli_url,
+                            )
+                            if spotify_track_id:
+                                match_method = "odesli"
+                                metadata_source = "odesli"
                     await repo.clear_candidates(state.db_conn, fid)
                     if spotify_track_id:
                         await state.db_conn.execute(
                             """UPDATE local_file SET
                                 artist=?, title=?,
                                 spotify_track_id=?, match_confidence=1.0,
-                                match_method='musicbrainz',
+                                match_method=?,
                                 status='matched',
-                                metadata_source='musicbrainz'
+                                metadata_source=?
                                WHERE id=?""",
-                            (md.artist, md.title, spotify_track_id, fid),
+                            (md.artist, md.title, spotify_track_id,
+                             match_method, metadata_source, fid),
                         )
-                        outcomes["mb_direct"] += 1
+                        if match_method == "odesli":
+                            outcomes["odesli"] += 1
+                        else:
+                            outcomes["mb_direct"] += 1
                     else:
                         await state.db_conn.execute(
                             """UPDATE local_file SET artist=?, title=?,
@@ -150,6 +171,7 @@ async def deep_scan_unmatched(
                 stage="deep_scan", processed=processed, total=total,
                 message=(
                     f"mb_direct {outcomes['mb_direct']} / "
+                    f"odesli {outcomes['odesli']} / "
                     f"acoustid {outcomes['matched']} / "
                     f"no_match {outcomes['no_match']} / "
                     f"fpcalc_failed {outcomes['fpcalc_failed']}"
@@ -158,15 +180,17 @@ async def deep_scan_unmatched(
         await state.bus.publish(ProgressEvent(
             stage="deep_scan", processed=total, total=total,
             message=(
-                f"done — {outcomes['mb_direct']} matched via MusicBrainz "
-                f"(no Spotify search), {outcomes['matched']} acoustid-tagged "
-                f"awaiting match, {outcomes['no_match']} no_match, "
+                f"done — {outcomes['mb_direct']} matched via MusicBrainz, "
+                f"{outcomes['odesli']} via Odesli (no Spotify search), "
+                f"{outcomes['matched']} acoustid-tagged awaiting match, "
+                f"{outcomes['no_match']} no_match, "
                 f"{outcomes['fpcalc_failed']} fpcalc_failed"
             ),
         ))
     finally:
         await acoustid.aclose()
         await musicbrainz.aclose()
+        await songlink.aclose()
         await state.bus.flush()
     return outcomes
 

@@ -19,6 +19,7 @@ when it doesn't, we fall back to the existing match path.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 import httpx
 
@@ -43,6 +44,17 @@ _MB_BUCKET = TokenBucket(rate=1.0, capacity=2.0)
 # `spotify:track:<id>`. Spotify track IDs are 22-char base62.
 _SPOTIFY_TRACK_URL_RE = re.compile(
     r"(?:https?://open\.spotify\.com/track/|spotify:track:)([A-Za-z0-9]{22})"
+)
+
+# Hosts that Odesli/SongLink can resolve to a Spotify URL. Order matters
+# only as a stable preference: Apple/iTunes is by far the most populated
+# on MB recordings, so we try it first when more than one is available.
+_ODESLI_RESOLVABLE_HOSTS = (
+    "music.apple.com", "itunes.apple.com",
+    "deezer.com", "www.deezer.com",
+    "tidal.com", "www.tidal.com", "listen.tidal.com",
+    "music.youtube.com",
+    "soundcloud.com",
 )
 
 # Relationship `type` strings that historically carry Spotify track URLs.
@@ -74,13 +86,20 @@ class MusicBrainzClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def spotify_track_id_for_mbid(self, mbid: str) -> str | None:
-        """Resolve a MusicBrainz Recording ID to a Spotify track ID, if any.
+    async def resolve_mbid(self, mbid: str) -> "MBResolution":
+        """Fetch the MB recording and extract anything useful for matching.
 
-        Returns the 22-char Spotify track ID on success, None when:
-          - the recording has no Spotify URL relationship
-          - the request fails (network, 404, etc.) — caller should treat
-            this as a soft miss and fall back to the regular match path
+        Returns:
+          - `spotify_track_id`: the 22-char Spotify ID, when MB has a
+            Spotify URL relationship on this recording (the happy path).
+          - `odesli_url`: a non-Spotify streaming URL (Apple/Deezer/Tidal/
+            YouTube Music/SoundCloud) that Odesli can convert to Spotify
+            — populated only when no Spotify URL was found, so it's a
+            true fallback signal.
+
+        Both fields can be None when MB has no usable URL relationships
+        or when the request fails (caller treats failures as soft misses
+        and falls back further).
         """
         await _MB_BUCKET.acquire()
         try:
@@ -89,32 +108,64 @@ class MusicBrainzClient:
                 params={"inc": "url-rels", "fmt": "json"},
             )
         except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError):
-            return None
+            return MBResolution(None, None)
 
         if r.status_code != 200:
-            return None
+            return MBResolution(None, None)
 
         try:
             data = r.json()
         except ValueError:
-            return None
+            return MBResolution(None, None)
 
-        for rel in data.get("relations") or []:
+        relations = data.get("relations") or []
+        spotify_id: str | None = None
+        # Prefer URLs from streaming relationships, but if none of those
+        # match scan all URL relationships — we've seen Spotify links
+        # filed under broader 'other databases' relationship types.
+        for rel in relations:
             url = (rel.get("url") or {}).get("resource", "")
             if not url:
                 continue
-            # Prefer URLs from streaming relationships, but if none of those
-            # match scan all URL relationships — we've seen Spotify links
-            # filed under broader 'other databases' relationship types.
             rel_type = (rel.get("type") or "").lower()
             m = _SPOTIFY_TRACK_URL_RE.search(url)
             if m and (rel_type in _STREAMING_REL_TYPES or "spotify" in rel_type or rel_type == "other databases"):
-                return m.group(1)
+                spotify_id = m.group(1)
+                break
+        if spotify_id is None:
+            # Last-ditch sweep: any Spotify track URL anywhere on the recording.
+            for rel in relations:
+                url = (rel.get("url") or {}).get("resource", "")
+                m = _SPOTIFY_TRACK_URL_RE.search(url)
+                if m:
+                    spotify_id = m.group(1)
+                    break
 
-        # Last-ditch sweep: any Spotify track URL anywhere on the recording.
-        for rel in data.get("relations") or []:
-            url = (rel.get("url") or {}).get("resource", "")
-            m = _SPOTIFY_TRACK_URL_RE.search(url)
-            if m:
-                return m.group(1)
-        return None
+        if spotify_id is not None:
+            # No need to look for Odesli-resolvable URLs — we've already
+            # got the answer.
+            return MBResolution(spotify_id, None)
+
+        # No Spotify URL on this recording. Look for any other streaming
+        # platform URL Odesli can convert. Iterate hosts in preference
+        # order so the first hit wins.
+        for host in _ODESLI_RESOLVABLE_HOSTS:
+            for rel in relations:
+                url = (rel.get("url") or {}).get("resource", "")
+                if host in url:
+                    return MBResolution(None, url)
+        return MBResolution(None, None)
+
+    async def spotify_track_id_for_mbid(self, mbid: str) -> str | None:
+        """Back-compat shim: returns just the Spotify track ID, if any.
+
+        New callers should use `resolve_mbid` instead — it surfaces the
+        fallback URL too in a single round-trip.
+        """
+        return (await self.resolve_mbid(mbid)).spotify_track_id
+
+
+@dataclass(slots=True, frozen=True)
+class MBResolution:
+    spotify_track_id: str | None
+    odesli_url: str | None

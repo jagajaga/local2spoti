@@ -9,7 +9,7 @@ import httpx
 import pytest
 import respx
 
-from local2spoti.musicbrainz import MusicBrainzClient
+from local2spoti.musicbrainz import MusicBrainzClient, MBResolution
 
 
 def _mb_recording_response(relations: list[dict]) -> dict:
@@ -137,3 +137,64 @@ async def test_follows_301_redirect_when_mbid_was_merged():
     finally:
         await client.aclose()
     assert result == "AAAAAAAAAAAAAAAAAAAAAA"
+
+
+@respx.mock
+async def test_resolve_mbid_returns_odesli_url_when_no_spotify():
+    """When MB has Apple/Deezer/Tidal but no Spotify URL, resolve_mbid
+    surfaces the first one (in preference order) for Odesli to convert."""
+    respx.get("https://musicbrainz.org/ws/2/recording/abcd").mock(
+        return_value=httpx.Response(200, json=_mb_recording_response([
+            {"type": "free streaming",
+             "url": {"resource": "https://www.deezer.com/track/12345"}},
+            {"type": "free streaming",
+             "url": {"resource": "https://music.apple.com/us/album/x/123?i=456"}},
+        ]))
+    )
+    client = MusicBrainzClient()
+    try:
+        res = await client.resolve_mbid("abcd")
+    finally:
+        await client.aclose()
+    assert res.spotify_track_id is None
+    # apple.music should win over deezer per preference order.
+    assert "music.apple.com" in res.odesli_url
+
+
+@respx.mock
+async def test_resolve_mbid_prefers_spotify_over_odesli_url():
+    """When BOTH a Spotify URL and an Apple/Deezer URL exist, we take the
+    Spotify URL directly and skip Odesli entirely (no point in a redundant
+    Odesli call when MB already gave us the answer)."""
+    respx.get("https://musicbrainz.org/ws/2/recording/abcd").mock(
+        return_value=httpx.Response(200, json=_mb_recording_response([
+            {"type": "free streaming",
+             "url": {"resource": "https://music.apple.com/us/album/x/123?i=456"}},
+            {"type": "free streaming",
+             "url": {"resource": "https://open.spotify.com/track/4iV5W9uYEdYUVa79Axb7Rh"}},
+        ]))
+    )
+    client = MusicBrainzClient()
+    try:
+        res = await client.resolve_mbid("abcd")
+    finally:
+        await client.aclose()
+    assert res.spotify_track_id == "4iV5W9uYEdYUVa79Axb7Rh"
+    assert res.odesli_url is None
+
+
+@respx.mock
+async def test_resolve_mbid_returns_both_none_when_no_useful_relations():
+    respx.get("https://musicbrainz.org/ws/2/recording/abcd").mock(
+        return_value=httpx.Response(200, json=_mb_recording_response([
+            # An unrelated relationship type that points nowhere useful.
+            {"type": "wikidata",
+             "url": {"resource": "https://www.wikidata.org/wiki/Q12345"}},
+        ]))
+    )
+    client = MusicBrainzClient()
+    try:
+        res = await client.resolve_mbid("abcd")
+    finally:
+        await client.aclose()
+    assert res == MBResolution(None, None)
