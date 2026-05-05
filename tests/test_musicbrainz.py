@@ -97,3 +97,43 @@ async def test_returns_none_on_network_error():
     finally:
         await client.aclose()
     assert track_id is None
+
+
+@respx.mock
+async def test_follows_301_redirect_when_mbid_was_merged():
+    """MB returns 301 with a Location header when the requested MBID has
+    been merged into another recording. We want to follow that redirect
+    and return whatever the canonical recording's Spotify URL is.
+    """
+    # Simulate: old MBID redirects to canonical, canonical has a Spotify URL.
+    old_mbid = "0e421515-3407-4615-b780-1fb31499bd68"
+    new_mbid = "11111111-2222-3333-4444-555555555555"
+    respx.get(f"https://musicbrainz.org/ws/2/recording/{old_mbid}").mock(
+        return_value=httpx.Response(
+            301,
+            headers={
+                "Location": (
+                    f"https://musicbrainz.org/ws/2/recording/{new_mbid}"
+                    "?inc=url-rels&fmt=json"
+                ),
+            },
+        )
+    )
+    respx.get(f"https://musicbrainz.org/ws/2/recording/{new_mbid}").mock(
+        return_value=httpx.Response(200, json={
+            "id": new_mbid,
+            "title": "Some Track",
+            "relations": [
+                {
+                    "type": "free streaming",
+                    "url": {"resource": "https://open.spotify.com/track/AAAAAAAAAAAAAAAAAAAAAA"},
+                },
+            ],
+        })
+    )
+    client = MusicBrainzClient()
+    try:
+        result = await client.spotify_track_id_for_mbid(old_mbid)
+    finally:
+        await client.aclose()
+    assert result == "AAAAAAAAAAAAAAAAAAAAAA"

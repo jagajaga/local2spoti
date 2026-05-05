@@ -63,6 +63,12 @@ class MusicBrainzClient:
             base_url=_MB_BASE,
             timeout=30.0,
             headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
+            # Follow 301/302. MB redirects when an MBID has been merged
+            # into another recording — the Location header points at the
+            # canonical MBID. Without this we'd return None for every
+            # merged recording, even though the destination has the
+            # Spotify URL relationship we're after.
+            follow_redirects=True,
         )
 
     async def aclose(self) -> None:
