@@ -58,10 +58,16 @@ async def fingerprint(path: Path, *, timeout: float = 30.0) -> tuple[int, str] |
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
+        # fpcalc is stuck (slow/dead USB drive, corrupt file, etc.). Send
+        # SIGKILL, but bound the post-kill wait too — on macOS, a process
+        # blocked in a kernel I/O wait won't die immediately even on
+        # SIGKILL; it has to finish the current syscall first, which
+        # against an unresponsive USB drive can be minutes. After 5s we
+        # give up on the wait and let Python/OS reap the zombie later.
         proc.kill()
         try:
-            await proc.wait()
-        except Exception:
+            await asyncio.wait_for(proc.wait(), timeout=5.0)
+        except (asyncio.TimeoutError, Exception):
             pass
         return None
     if proc.returncode != 0:
