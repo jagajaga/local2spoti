@@ -401,6 +401,44 @@ async def retry_errors(request: Request) -> JSONResponse:
     )
 
 
+@router.post("/match_via_fingerprint")
+async def match_via_fingerprint(request: Request, limit: int = 100000) -> JSONResponse:
+    """Alternative to /api/match: uses AcoustID fingerprinting + MusicBrainz
+    URL relationships to map files directly to Spotify track IDs without
+    ever calling /v1/search.
+
+    Operates on every file still needing a Spotify match
+    (status='scanned' OR 'unmatched', spotify_track_id IS NULL). Files
+    that resolve via MB go to status='matched' immediately. Files where
+    MB has no Spotify URL fall back to AcoustID-tagged status='scanned'
+    (so a subsequent /api/match run can finish them). Files that AcoustID
+    can't identify stay where they were.
+
+    Why use this: dramatically reduces Spotify rate-limit pressure by
+    skipping /v1/search for every track that's MusicBrainz-registered.
+    Free (uses only AcoustID + MusicBrainz APIs, both free tiers).
+    """
+    state = request.app.state.app_state
+    if not fpcalc_available():
+        return JSONResponse({"error": "fpcalc not installed"}, status_code=400)
+    if not state.settings.acoustid_api_key:
+        return JSONResponse({"error": "acoustid_api_key not set"}, status_code=400)
+    if state.deep_scan_task and not state.deep_scan_task.done():
+        return JSONResponse(
+            {"error": "Deep scan / fingerprint match already running — stop it first"},
+            status_code=409,
+        )
+    if not state.any_job_running():
+        state.cancel_event.clear()
+    state.deep_scan_task = asyncio.create_task(
+        deep_scan_unmatched(state, limit=limit, statuses=("scanned", "unmatched")),
+    )
+    return JSONResponse({
+        "ok": True,
+        "message": "Fingerprint match started — bypasses Spotify /search via MusicBrainz lookups",
+    })
+
+
 @router.post("/match")
 async def match_only(request: Request) -> JSONResponse:
     """Run JUST the Spotify match stage on every status='scanned' file.
@@ -507,7 +545,7 @@ async def deep_scan(
     if not state.any_job_running():
         state.cancel_event.clear()
     state.deep_scan_task = asyncio.create_task(
-        deep_scan_unmatched(state, limit=limit, status=status)
+        deep_scan_unmatched(state, limit=limit, statuses=(status,))
     )
     return JSONResponse(
         {

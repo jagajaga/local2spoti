@@ -40,6 +40,7 @@ async def dashboard(request: Request) -> HTMLResponse:
             "spotify_user": user_row[0] if user_row else None,
             "counts": {k.value: v for k, v in counts.items()},
             "threshold": state.settings.threshold,
+            "has_acoustid_key": bool(state.settings.acoustid_api_key),
         },
     )
 

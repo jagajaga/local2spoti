@@ -168,9 +168,18 @@
               hx-target="#scan-status"
               hx-swap="innerHTML"
               class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 rounded disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Run Spotify match on currently scanned files (no filesystem walk, no AI/AcoustID)"
+              title="Run Spotify match on currently scanned files (uses /v1/search; subject to Spotify rate limits)"
               {% if not spotify_user %}disabled{% endif %}>
         Match
+      </button>
+      <button type="button"
+              hx-post="/api/match_via_fingerprint"
+              hx-target="#scan-status"
+              hx-swap="innerHTML"
+              class="px-4 py-2 bg-amber-600 hover:bg-amber-500 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Alternative: identify tracks via AcoustID fingerprinting + MusicBrainz Spotify URL relationships. Bypasses /v1/search. Free APIs."
+              {% if not has_acoustid_key %}disabled title="AcoustID API key not configured"{% endif %}>
+        Match via fingerprint (free)
       </button>
       <button type="button"
               hx-post="/api/scan/cancel"

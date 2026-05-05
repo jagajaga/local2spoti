@@ -202,8 +202,8 @@ async def test_deep_scan_status_review_only_processes_review_files(tmp_path, mon
     state.cancel_event = asyncio.Event()
     async with connect(db) as conn:
         state.db_conn = conn
-        # status=review: should only consider the 1 review file
-        await deep_scan_unmatched(state, status="review")
+        # statuses=('review',): should only consider the 1 review file
+        await deep_scan_unmatched(state, statuses=("review",))
     # First emitted event should mention 1 file (only the review one)
     fingerprinting_msgs = [e for e in captured if "fingerprint" in (e.message or "")]
     assert any("1 review files" in (e.message or "") for e in fingerprinting_msgs)

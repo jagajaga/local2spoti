@@ -23,22 +23,29 @@ if TYPE_CHECKING:
 
 
 async def deep_scan_unmatched(
-    state: "AppState", *, limit: int = 100000, status: str = "unmatched",
+    state: "AppState", *, limit: int = 100000,
+    statuses: tuple[str, ...] = ("unmatched",),
 ) -> dict[str, int]:
-    """Run AcoustID fingerprint + lookup over every file with `status=<status>`.
+    """Run AcoustID fingerprint + MusicBrainz lookup over every file whose
+    status is in `statuses`.
 
     Default operates on 'unmatched' files (no Spotify match found). Pass
-    status='review' to re-fingerprint files in the review queue, replacing
-    their stale tags with whatever AcoustID identifies — useful when the
-    review candidates look obviously wrong.
+    ('review',) to re-fingerprint files in the review queue. Pass
+    ('scanned', 'unmatched') to run the AcoustID + MB fast-path on
+    everything that still needs matching — files that resolve via MB go
+    straight to `status='matched'` with a Spotify track ID, no
+    /v1/search call ever.
 
     Returns the per-outcome counts. Emits stage='deep_scan' progress events.
     Cancels cleanly on `state.cancel_event`. Aborts the whole run on the
     first AcoustID auth/quota error.
     """
+    placeholders = ",".join("?" * len(statuses))
     cur = await state.db_conn.execute(
-        "SELECT id, path, duration_ms FROM local_file WHERE status=? LIMIT ?",
-        (status, limit),
+        f"SELECT id, path, duration_ms FROM local_file "
+        f"WHERE status IN ({placeholders}) AND spotify_track_id IS NULL "
+        f"LIMIT ?",
+        (*statuses, limit),
     )
     rows = await cur.fetchall()
     outcomes = {
@@ -47,17 +54,18 @@ async def deep_scan_unmatched(
         "no_match": 0,
         "fpcalc_failed": 0,
     }
+    pool_label = "/".join(statuses)
     if not rows:
         await state.bus.publish(ProgressEvent(
             stage="deep_scan", processed=0, total=0,
-            message=f"no {status} files to deep-scan",
+            message=f"no {pool_label} files to deep-scan",
         ))
         return outcomes
     total = len(rows)
     processed = 0
     await state.bus.publish(ProgressEvent(
         stage="deep_scan", processed=0, total=total,
-        message=f"fingerprinting {total} {status} files",
+        message=f"fingerprinting {total} {pool_label} files",
     ))
     acoustid = AcoustidClient(api_key=state.settings.acoustid_api_key)
     # Resolves MBID → Spotify track ID via MusicBrainz URL relationships,
@@ -76,7 +84,9 @@ async def deep_scan_unmatched(
                 "SELECT status FROM local_file WHERE id=?", (fid,),
             )
             row2 = await cur2.fetchone()
-            if row2 is None or row2[0] != status:
+            # Race guard: skip if a parallel job already moved this file
+            # out of the pool we're sweeping.
+            if row2 is None or row2[0] not in statuses:
                 processed += 1
                 continue
             fp = await fingerprint(Path(path_str))
