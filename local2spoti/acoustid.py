@@ -18,6 +18,10 @@ class AcoustidMatch:
     artist: str
     title: str
     score: float
+    # MusicBrainz Recording ID for the matched track, when AcoustID gave
+    # us one. Used downstream to resolve Spotify track URLs via MB's URL
+    # relationships (bypasses /v1/search entirely for tracks MB knows).
+    recording_id: str | None = None
 
 
 class AcoustidError(Exception):
@@ -96,5 +100,6 @@ class AcoustidClient:
                         artist=artists[0].get("name", ""),
                         title=title,
                         score=result.get("score", 0.0),
+                        recording_id=rec.get("id"),
                     )
         return None

@@ -20,6 +20,7 @@ class MetadataSource(str, Enum):
     ACOUSTID = "acoustid"
     AI = "ai"
     MANUAL = "manual"
+    MUSICBRAINZ = "musicbrainz"  # Spotify track ID resolved via MB URL relationships
     NONE = "none"
 
 

@@ -16,6 +16,7 @@ from . import repo
 from .acoustid import AcoustidClient, AcoustidError, fingerprint
 from .ai_match import AIClient
 from .events import ProgressEvent
+from .musicbrainz import MusicBrainzClient
 
 if TYPE_CHECKING:
     from .state import AppState
@@ -40,7 +41,12 @@ async def deep_scan_unmatched(
         (status, limit),
     )
     rows = await cur.fetchall()
-    outcomes = {"matched": 0, "no_match": 0, "fpcalc_failed": 0}
+    outcomes = {
+        "matched": 0,        # AcoustID identified artist/title (sent to Spotify search later)
+        "mb_direct": 0,      # MusicBrainz had a Spotify URL → straight to status='matched'
+        "no_match": 0,
+        "fpcalc_failed": 0,
+    }
     if not rows:
         await state.bus.publish(ProgressEvent(
             stage="deep_scan", processed=0, total=0,
@@ -54,6 +60,10 @@ async def deep_scan_unmatched(
         message=f"fingerprinting {total} {status} files",
     ))
     acoustid = AcoustidClient(api_key=state.settings.acoustid_api_key)
+    # Resolves MBID → Spotify track ID via MusicBrainz URL relationships,
+    # bypassing /v1/search entirely for tracks MB has registered. Free,
+    # 1 req/sec rate-limited internally.
+    musicbrainz = MusicBrainzClient()
     try:
         for fid, path_str, _dur_ms in rows:
             if state.cancel_event.is_set():
@@ -85,19 +95,42 @@ async def deep_scan_unmatched(
                 if md is None:
                     outcomes["no_match"] += 1
                 else:
+                    # Try the MB → Spotify URL shortcut first. If it
+                    # resolves we go directly to status='matched' with
+                    # the Spotify track ID set, no /v1/search call ever.
+                    spotify_track_id: str | None = None
+                    if md.recording_id:
+                        spotify_track_id = await musicbrainz.spotify_track_id_for_mbid(
+                            md.recording_id,
+                        )
                     await repo.clear_candidates(state.db_conn, fid)
-                    await state.db_conn.execute(
-                        """UPDATE local_file SET artist=?, title=?, status='scanned',
-                           metadata_source='acoustid' WHERE id=?""",
-                        (md.artist, md.title, fid),
-                    )
+                    if spotify_track_id:
+                        await state.db_conn.execute(
+                            """UPDATE local_file SET
+                                artist=?, title=?,
+                                spotify_track_id=?, match_confidence=1.0,
+                                match_method='musicbrainz',
+                                status='matched',
+                                metadata_source='musicbrainz'
+                               WHERE id=?""",
+                            (md.artist, md.title, spotify_track_id, fid),
+                        )
+                        outcomes["mb_direct"] += 1
+                    else:
+                        await state.db_conn.execute(
+                            """UPDATE local_file SET artist=?, title=?,
+                                status='scanned', metadata_source='acoustid'
+                               WHERE id=?""",
+                            (md.artist, md.title, fid),
+                        )
+                        outcomes["matched"] += 1
                     await state.db_conn.commit()
-                    outcomes["matched"] += 1
             processed += 1
             await state.bus.publish(ProgressEvent(
                 stage="deep_scan", processed=processed, total=total,
                 message=(
-                    f"matched {outcomes['matched']} / "
+                    f"mb_direct {outcomes['mb_direct']} / "
+                    f"acoustid {outcomes['matched']} / "
                     f"no_match {outcomes['no_match']} / "
                     f"fpcalc_failed {outcomes['fpcalc_failed']}"
                 ),
@@ -105,13 +138,15 @@ async def deep_scan_unmatched(
         await state.bus.publish(ProgressEvent(
             stage="deep_scan", processed=total, total=total,
             message=(
-                f"done — matched {outcomes['matched']}, "
-                f"no_match {outcomes['no_match']}, "
-                f"fpcalc_failed {outcomes['fpcalc_failed']}"
+                f"done — {outcomes['mb_direct']} matched via MusicBrainz "
+                f"(no Spotify search), {outcomes['matched']} acoustid-tagged "
+                f"awaiting match, {outcomes['no_match']} no_match, "
+                f"{outcomes['fpcalc_failed']} fpcalc_failed"
             ),
         ))
     finally:
         await acoustid.aclose()
+        await musicbrainz.aclose()
         await state.bus.flush()
     return outcomes
 
