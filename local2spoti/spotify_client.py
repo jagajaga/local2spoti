@@ -10,6 +10,16 @@ from .ratelimit import TokenBucket
 
 _BASE = "https://api.spotify.com/v1"
 
+# Default pause when we know we should back off but Spotify didn't tell us
+# how long (used for both no-Retry-After 429s/403s and httpx network
+# errors). The 429 handler still respects an explicit Retry-After up to
+# the cap below.
+_DEFAULT_RATE_LIMIT_PAUSE_SECONDS = 60.0
+# Hard cap on any pause Spotify asks for. They've been observed sending
+# multi-hour Retry-After values; we'd rather probe every 5 min than sit
+# idle for the rest of the day.
+_MAX_RATE_LIMIT_PAUSE_SECONDS = 300.0
+
 # Substrings in 403 response bodies that mean "soft rate limit, back off"
 # rather than a real authorization failure. After Spotify 429s us a few
 # times, follow-up requests start coming back as 403 with this message
@@ -84,14 +94,14 @@ class SpotifyClient:
             ):
                 # Network blip — DNS hiccup, captive portal, brief WiFi
                 # drop, Spotify took too long to answer. Definitionally
-                # transient. Pause briefly and retry forever; the user's
-                # only escape hatch is the Stop button (cancel_event in
-                # the pipeline). Without this, an httpx.ConnectError
-                # would propagate up to process_artist and that group's
-                # files would get marked as error — but it's not the
-                # files' fault and the next /scan run would just hit
-                # the same wall.
-                self._bucket.pause_for(15.0)
+                # transient. Pause and retry forever; the user's only
+                # escape hatch is the Stop button (cancel_event in the
+                # pipeline). Same 60s default the 429 path uses when
+                # there's no Retry-After header — keeps a single
+                # consistent "retry-after-this-long" knob. Without this
+                # an httpx.ConnectError would propagate to process_artist
+                # and the group's files would get marked as error.
+                self._bucket.pause_for(_DEFAULT_RATE_LIMIT_PAUSE_SECONDS)
                 continue
             # Treat both 429 and "Spotify is unavailable in this country"
             # 403s as soft rate-limit signals. Empirically, Spotify
@@ -103,8 +113,10 @@ class SpotifyClient:
             # process_artist mark the file as 'error', but the file is
             # fine; only Spotify is being grumpy.
             if r.status_code == 429 or _is_soft_rate_limit_403(r):
-                raw_wait = float(r.headers.get("Retry-After", "60"))
-                wait = min(raw_wait, 300.0)
+                raw_wait = float(
+                    r.headers.get("Retry-After", _DEFAULT_RATE_LIMIT_PAUSE_SECONDS),
+                )
+                wait = min(raw_wait, _MAX_RATE_LIMIT_PAUSE_SECONDS)
                 self._bucket.pause_for(wait)
                 continue
             if r.status_code >= 500 and attempt < 4:
