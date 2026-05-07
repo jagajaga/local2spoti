@@ -56,7 +56,8 @@ class CachedCatalog:
 
 
 async def get(
-    conn: aiosqlite.Connection, artist_name: str,
+    conn: aiosqlite.Connection,
+    artist_name: str,
 ) -> CachedCatalog | None:
     """Return a cached catalog for `artist_name`, or None if not cached
     OR if the cached entry has expired (caller should re-fetch)."""

@@ -2,17 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import UTC
+from datetime import datetime as _dt
 from pathlib import Path
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from datetime import UTC, datetime as _dt
-
 from .. import repo
-from ..acoustid import AcoustidClient, AcoustidError, fingerprint, fpcalc_available
-from ..ai_match import AIClient
-from ..events import ProgressEvent
+from ..acoustid import fpcalc_available
 from ..matcher import Threshold
 from ..models import FileStatus
 from ..pipeline import _stage_match, run_scan
@@ -42,11 +40,10 @@ def _make_token_provider(state):
             )
         except Exception:
             pass
-        cur = await state.db_conn.execute(
-            "SELECT access_token FROM auth_token WHERE key='spotify'"
-        )
+        cur = await state.db_conn.execute("SELECT access_token FROM auth_token WHERE key='spotify'")
         row = await cur.fetchone()
         return row[0] if row else ""
+
     return _provide
 
 
@@ -57,8 +54,7 @@ auth_router = APIRouter()
 @router.post("/review/approve")
 async def approve(request: Request, file_id: int = Form(...), track_id: str = Form(...)) -> JSONResponse:
     state = request.app.state.app_state
-    await repo.update_match(state.db_conn, file_id,
-                             spotify_track_id=track_id, confidence=1.0, method="manual")
+    await repo.update_match(state.db_conn, file_id, spotify_track_id=track_id, confidence=1.0, method="manual")
     return JSONResponse({"ok": True})
 
 
@@ -90,14 +86,14 @@ async def approve_top_visible(request: Request) -> JSONResponse:
     )
     rows = await cur.fetchall()
     for fid, track_id, conf in rows:
-        await repo.update_match(state.db_conn, fid,
-                                 spotify_track_id=track_id, confidence=conf, method="manual")
+        await repo.update_match(state.db_conn, fid, spotify_track_id=track_id, confidence=conf, method="manual")
     return JSONResponse({"approved": len(rows)})
 
 
 @router.post("/review/approve_above_confidence")
 async def approve_above_confidence(
-    request: Request, threshold: float = Form(...),
+    request: Request,
+    threshold: float = Form(...),
 ) -> JSONResponse:
     """Bulk-approve every review-queue file whose top candidate's confidence
     is at or above `threshold` (0.0–1.0). Hits the entire queue, not just
@@ -105,7 +101,8 @@ async def approve_above_confidence(
     """
     if not 0.0 <= threshold <= 1.0:
         return JSONResponse(
-            {"error": "threshold must be between 0.0 and 1.0"}, status_code=400,
+            {"error": "threshold must be between 0.0 and 1.0"},
+            status_code=400,
         )
     state = request.app.state.app_state
     cur = await state.db_conn.execute(
@@ -118,12 +115,18 @@ async def approve_above_confidence(
     rows = await cur.fetchall()
     for fid, track_id, conf in rows:
         await repo.update_match(
-            state.db_conn, fid, spotify_track_id=track_id,
-            confidence=conf, method="manual",
+            state.db_conn,
+            fid,
+            spotify_track_id=track_id,
+            confidence=conf,
+            method="manual",
         )
     return JSONResponse(
-        {"approved": len(rows), "threshold": threshold,
-         "message": f"Approved {len(rows)} files with confidence ≥ {int(threshold * 100)}%"}
+        {
+            "approved": len(rows),
+            "threshold": threshold,
+            "message": f"Approved {len(rows)} files with confidence ≥ {int(threshold * 100)}%",
+        }
     )
 
 
@@ -194,9 +197,7 @@ async def browse(request: Request, path: str | None = None) -> HTMLResponse:
     except OSError:
         return HTMLResponse(f'<div class="text-red-400 text-sm">invalid path: {path}</div>')
     if not base.is_dir():
-        return HTMLResponse(
-            f'<div class="text-red-400 text-sm">not a directory: {base}</div>'
-        )
+        return HTMLResponse(f'<div class="text-red-400 text-sm">not a directory: {base}</div>')
 
     entries: list[dict] = []
     try:
@@ -206,9 +207,7 @@ async def browse(request: Request, path: str | None = None) -> HTMLResponse:
             if entry.is_dir(follow_symlinks=False):
                 entries.append({"name": entry.name, "path": str(base / entry.name)})
     except PermissionError:
-        return HTMLResponse(
-            f'<div class="text-red-400 text-sm">permission denied: {base}</div>'
-        )
+        return HTMLResponse(f'<div class="text-red-400 text-sm">permission denied: {base}</div>')
     entries.sort(key=lambda e: e["name"].lower())
 
     parent = str(base.parent) if base.parent != base else None
@@ -248,16 +247,18 @@ async def scan_start(request: Request) -> JSONResponse:
     if not state.settings.library_root:
         return JSONResponse({"error": "library_root not configured"}, status_code=400)
 
-    cur = await state.db_conn.execute(
-        "SELECT access_token FROM auth_token WHERE key='spotify'"
-    )
+    cur = await state.db_conn.execute("SELECT access_token FROM auth_token WHERE key='spotify'")
     row = await cur.fetchone()
     if not row:
         return JSONResponse({"error": "Spotify not connected"}, status_code=400)
     access_token = row[0]
 
     threshold = Threshold(state.settings.threshold)
-    client = SpotifyClient(access_token=access_token, bucket=state.spotify_bucket, token_provider=_make_token_provider(state))
+    client = SpotifyClient(
+        access_token=access_token,
+        bucket=state.spotify_bucket,
+        token_provider=_make_token_provider(state),
+    )
     # Only clear the cancel event if no other long-running job is using it.
     if not state.any_job_running():
         state.cancel_event.clear()
@@ -278,49 +279,52 @@ async def scan_start(request: Request) -> JSONResponse:
         """
         try:
             await run_scan(
-                conn=state.db_conn, client=client,
+                conn=state.db_conn,
+                client=client,
                 library_root=Path(state.settings.library_root),
-                threshold=threshold, bus=state.bus,
+                threshold=threshold,
+                bus=state.bus,
             )
             if state.cancel_event.is_set():
                 return
 
             # Phase 2: AcoustID rescue
-            if (
-                fpcalc_available()
-                and state.settings.acoustid_api_key
-                and await count_unmatched(state.db_conn) > 0
-            ):
+            if fpcalc_available() and state.settings.acoustid_api_key and await count_unmatched(state.db_conn) > 0:
                 await deep_scan_unmatched(state)
                 if state.cancel_event.is_set():
                     return
                 await _stage_match(
-                    state.db_conn, client, threshold,
-                    bus=state.bus, now=_dt.now(UTC),
+                    state.db_conn,
+                    client,
+                    threshold,
+                    bus=state.bus,
+                    now=_dt.now(UTC),
                 )
                 if state.cancel_event.is_set():
                     return
 
             # Phase 3: AI rescue
-            if (
-                os.environ.get("ANTHROPIC_API_KEY")
-                and await count_unmatched(state.db_conn) > 0
-            ):
+            if os.environ.get("ANTHROPIC_API_KEY") and await count_unmatched(state.db_conn) > 0:
                 await ai_scan_unmatched(state)
                 if state.cancel_event.is_set():
                     return
                 await _stage_match(
-                    state.db_conn, client, threshold,
-                    bus=state.bus, now=_dt.now(UTC),
+                    state.db_conn,
+                    client,
+                    threshold,
+                    bus=state.bus,
+                    now=_dt.now(UTC),
                 )
         finally:
             await client.aclose()
 
     state.scan_task = asyncio.create_task(_run())
-    return JSONResponse({
-        "ok": True,
-        "message": "Smart scan started — will auto-run AcoustID + AI on whatever stays unmatched",
-    })
+    return JSONResponse(
+        {
+            "ok": True,
+            "message": "Smart scan started — will auto-run AcoustID + AI on whatever stays unmatched",
+        }
+    )
 
 
 @router.post("/clear_rate_limit_pause")
@@ -335,10 +339,12 @@ async def clear_rate_limit_pause(request: Request) -> JSONResponse:
     state = request.app.state.app_state
     remaining = state.spotify_bucket.pause_remaining()
     state.spotify_bucket.clear_pause()
-    return JSONResponse({
-        "ok": True,
-        "message": f"Cleared rate-limit pause (was {remaining:.0f}s remaining)",
-    })
+    return JSONResponse(
+        {
+            "ok": True,
+            "message": f"Cleared rate-limit pause (was {remaining:.0f}s remaining)",
+        }
+    )
 
 
 @router.post("/logout")
@@ -351,11 +357,10 @@ async def logout(request: Request) -> JSONResponse:
     state = request.app.state.app_state
     if state.any_job_running():
         return JSONResponse(
-            {"error": "stop running jobs first"}, status_code=409,
+            {"error": "stop running jobs first"},
+            status_code=409,
         )
-    cur = await state.db_conn.execute(
-        "DELETE FROM auth_token WHERE key='spotify'"
-    )
+    cur = await state.db_conn.execute("DELETE FROM auth_token WHERE key='spotify'")
     await state.db_conn.commit()
     return JSONResponse(
         {"ok": True, "message": f"Disconnected from Spotify ({cur.rowcount} token cleared)"},
@@ -369,7 +374,8 @@ async def retry_one_error(request: Request, file_id: int) -> JSONResponse:
     /files?status=error view."""
     state = request.app.state.app_state
     cur = await state.db_conn.execute(
-        "SELECT status FROM local_file WHERE id=?", (file_id,),
+        "SELECT status FROM local_file WHERE id=?",
+        (file_id,),
     )
     row = await cur.fetchone()
     if row is None:
@@ -380,7 +386,8 @@ async def retry_one_error(request: Request, file_id: int) -> JSONResponse:
             status_code=400,
         )
     await state.db_conn.execute(
-        "DELETE FROM match_candidate WHERE local_file_id=?", (file_id,),
+        "DELETE FROM match_candidate WHERE local_file_id=?",
+        (file_id,),
     )
     await state.db_conn.execute(
         "UPDATE local_file SET status='scanned', last_error=NULL WHERE id=?",
@@ -406,13 +413,10 @@ async def retry_errors(request: Request) -> JSONResponse:
             {"error": "another job is running — stop it first"},
             status_code=409,
         )
-    cur = await state.db_conn.execute(
-        "SELECT id FROM local_file WHERE status='error'"
-    )
+    cur = await state.db_conn.execute("SELECT id FROM local_file WHERE status='error'")
     ids = [r[0] for r in await cur.fetchall()]
     if not ids:
-        return JSONResponse({"ok": True, "retried": 0,
-                             "message": "no files in error status"})
+        return JSONResponse({"ok": True, "retried": 0, "message": "no files in error status"})
     # Clear stale candidates and reset to scanned in a single transaction.
     placeholders = ",".join("?" * len(ids))
     await state.db_conn.execute(
@@ -426,8 +430,11 @@ async def retry_errors(request: Request) -> JSONResponse:
     )
     await state.db_conn.commit()
     return JSONResponse(
-        {"ok": True, "retried": len(ids),
-         "message": f"Reset {len(ids)} error files → scanned. Click Match to retry."}
+        {
+            "ok": True,
+            "retried": len(ids),
+            "message": f"Reset {len(ids)} error files → scanned. Click Match to retry.",
+        }
     )
 
 
@@ -459,10 +466,12 @@ async def match_via_mb_text_endpoint(request: Request, limit: int = 100000) -> J
     state.deep_scan_task = asyncio.create_task(
         match_via_mb_text(state, limit=limit),
     )
-    return JSONResponse({
-        "ok": True,
-        "message": "MB-text match started — bypasses Spotify /search via MB recording search",
-    })
+    return JSONResponse(
+        {
+            "ok": True,
+            "message": "MB-text match started — bypasses Spotify /search via MB recording search",
+        }
+    )
 
 
 @router.post("/match_via_fingerprint")
@@ -497,10 +506,12 @@ async def match_via_fingerprint(request: Request, limit: int = 100000) -> JSONRe
     state.deep_scan_task = asyncio.create_task(
         deep_scan_unmatched(state, limit=limit, statuses=("scanned", "unmatched")),
     )
-    return JSONResponse({
-        "ok": True,
-        "message": "Fingerprint match started — bypasses Spotify /search via MusicBrainz lookups",
-    })
+    return JSONResponse(
+        {
+            "ok": True,
+            "message": "Fingerprint match started — bypasses Spotify /search via MusicBrainz lookups",
+        }
+    )
 
 
 @router.post("/match")
@@ -519,9 +530,7 @@ async def match_only(request: Request) -> JSONResponse:
             {"error": "Spotify match/scan already running — stop it first"},
             status_code=409,
         )
-    cur = await state.db_conn.execute(
-        "SELECT access_token FROM auth_token WHERE key='spotify'"
-    )
+    cur = await state.db_conn.execute("SELECT access_token FROM auth_token WHERE key='spotify'")
     row = await cur.fetchone()
     if not row:
         return JSONResponse({"error": "Spotify not connected"}, status_code=400)
@@ -534,17 +543,22 @@ async def match_only(request: Request) -> JSONResponse:
     async def _run() -> None:
         try:
             await _stage_match(
-                state.db_conn, client, threshold,
-                bus=state.bus, now=_dt.now(UTC),
+                state.db_conn,
+                client,
+                threshold,
+                bus=state.bus,
+                now=_dt.now(UTC),
             )
         finally:
             await client.aclose()
 
     state.scan_task = asyncio.create_task(_run())
-    return JSONResponse({
-        "ok": True,
-        "message": "Match started — processing scanned files",
-    })
+    return JSONResponse(
+        {
+            "ok": True,
+            "message": "Match started — processing scanned files",
+        }
+    )
 
 
 @router.post("/scan/cancel")
@@ -563,17 +577,13 @@ async def scan_cancel(request: Request) -> JSONResponse:
             cancelled.append(label)
     if not cancelled:
         return JSONResponse({"error": "no jobs running"}, status_code=400)
-    return JSONResponse(
-        {"ok": True, "message": "Stopped: " + ", ".join(cancelled)}
-    )
+    return JSONResponse({"ok": True, "message": "Stopped: " + ", ".join(cancelled)})
 
 
 @router.post("/push")
 async def push(request: Request) -> JSONResponse:
     state = request.app.state.app_state
-    cur = await state.db_conn.execute(
-        "SELECT access_token FROM auth_token WHERE key='spotify'"
-    )
+    cur = await state.db_conn.execute("SELECT access_token FROM auth_token WHERE key='spotify'")
     row = await cur.fetchone()
     if not row:
         return JSONResponse({"error": "Spotify not connected"}, status_code=400)
@@ -587,7 +597,9 @@ async def push(request: Request) -> JSONResponse:
 
 @router.post("/deep_scan")
 async def deep_scan(
-    request: Request, limit: int = 100000, status: str = "unmatched",
+    request: Request,
+    limit: int = 100000,
+    status: str = "unmatched",
 ) -> JSONResponse:
     """Kick off an AcoustID deep scan as a background task.
 
@@ -608,9 +620,7 @@ async def deep_scan(
         )
     if not state.any_job_running():
         state.cancel_event.clear()
-    state.deep_scan_task = asyncio.create_task(
-        deep_scan_unmatched(state, limit=limit, statuses=(status,))
-    )
+    state.deep_scan_task = asyncio.create_task(deep_scan_unmatched(state, limit=limit, statuses=(status,)))
     return JSONResponse(
         {
             "ok": True,
@@ -621,7 +631,9 @@ async def deep_scan(
 
 @router.post("/ai_scan")
 async def ai_scan(
-    request: Request, batch_size: int = 20, limit: int = 100000,
+    request: Request,
+    batch_size: int = 20,
+    limit: int = 100000,
     status: str = "unmatched",
 ) -> JSONResponse:
     """Kick off Claude metadata identification as a background task.
@@ -635,7 +647,8 @@ async def ai_scan(
         return JSONResponse({"error": f"invalid status: {status}"}, status_code=400)
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return JSONResponse(
-            {"error": "ANTHROPIC_API_KEY not set"}, status_code=400,
+            {"error": "ANTHROPIC_API_KEY not set"},
+            status_code=400,
         )
     if state.ai_scan_task and not state.ai_scan_task.done():
         return JSONResponse(
@@ -656,12 +669,15 @@ async def ai_scan(
 
 
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from fastapi.responses import RedirectResponse
 
 from ..spotify_oauth import (
-    DEFAULT_SCOPE, PKCE, build_authorize_url, exchange_code,
+    DEFAULT_SCOPE,
+    PKCE,
+    build_authorize_url,
+    exchange_code,
 )
 
 # Module-level pkce store keyed by state token (one user, in-memory)
@@ -707,7 +723,12 @@ async def auth_callback(request: Request) -> RedirectResponse:
     )
     expires_at = datetime.now(UTC) + timedelta(seconds=tokens["expires_in"] - 60)
     from ..spotify_client import SpotifyClient
-    client = SpotifyClient(access_token=tokens["access_token"], bucket=state.spotify_bucket, token_provider=_make_token_provider(state))
+
+    client = SpotifyClient(
+        access_token=tokens["access_token"],
+        bucket=state.spotify_bucket,
+        token_provider=_make_token_provider(state),
+    )
     try:
         me = await client.me()
     finally:
@@ -716,8 +737,13 @@ async def auth_callback(request: Request) -> RedirectResponse:
         """INSERT OR REPLACE INTO auth_token (key, access_token, refresh_token,
                                               expires_at, scope, user_id)
            VALUES ('spotify', ?, ?, ?, ?, ?)""",
-        (tokens["access_token"], tokens["refresh_token"],
-         expires_at.isoformat(), tokens["scope"], me["id"]),
+        (
+            tokens["access_token"],
+            tokens["refresh_token"],
+            expires_at.isoformat(),
+            tokens["scope"],
+            me["id"],
+        ),
     )
     await state.db_conn.commit()
     return RedirectResponse("/dashboard", status_code=307)

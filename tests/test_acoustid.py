@@ -1,9 +1,10 @@
 import shutil
-import pytest
 
-from local2spoti.acoustid import fpcalc_available, AcoustidClient
-import respx
 import httpx
+import pytest
+import respx
+
+from local2spoti.acoustid import AcoustidClient, fpcalc_available
 
 
 def test_fpcalc_detection():
@@ -13,18 +14,25 @@ def test_fpcalc_detection():
 @respx.mock
 async def test_lookup_returns_top_match():
     respx.get("https://api.acoustid.org/v2/lookup").mock(
-        return_value=httpx.Response(200, json={
-            "status": "ok",
-            "results": [{
-                "id": "abc",
-                "score": 0.99,
-                "recordings": [{
-                    "id": "rec1",
-                    "title": "Around the World",
-                    "artists": [{"name": "Daft Punk"}],
-                }],
-            }],
-        })
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "ok",
+                "results": [
+                    {
+                        "id": "abc",
+                        "score": 0.99,
+                        "recordings": [
+                            {
+                                "id": "rec1",
+                                "title": "Around the World",
+                                "artists": [{"name": "Daft Punk"}],
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
     )
     client = AcoustidClient(api_key="test")
     md = await client.lookup(fingerprint="FP", duration=423)
@@ -48,11 +56,15 @@ async def test_lookup_raises_on_invalid_api_key():
     """Regression: AcoustID returns 200 with status=error when the API key
     is rejected. The client must raise instead of silently swallowing."""
     from local2spoti.acoustid import AcoustidError
+
     respx.get("https://api.acoustid.org/v2/lookup").mock(
-        return_value=httpx.Response(200, json={
-            "status": "error",
-            "error": {"code": 4, "message": "invalid API key"},
-        })
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": "error",
+                "error": {"code": 4, "message": "invalid API key"},
+            },
+        )
     )
     client = AcoustidClient(api_key="bogus")
     with pytest.raises(AcoustidError) as exc:
@@ -72,9 +84,12 @@ async def test_fingerprint_timeout_on_hung_subprocess(tmp_path, monkeypatch):
     fake_fpcalc.write_text("#!/bin/sh\nsleep 60\n")
     fake_fpcalc.chmod(0o755)
     import os
+
     monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ.get('PATH', '')}")
-    from local2spoti.acoustid import fingerprint
     import time
+
+    from local2spoti.acoustid import fingerprint
+
     t0 = time.monotonic()
     result = await fingerprint(tmp_path / "anything.mp3", timeout=0.3)
     elapsed = time.monotonic() - t0

@@ -19,7 +19,10 @@ class FileMatchResult:
 
 
 def _track_to_candidate(
-    track: dict, *, file: LocalFile, rank: int = 0,
+    track: dict,
+    *,
+    file: LocalFile,
+    rank: int = 0,
 ) -> MatchCandidate | None:
     if not file.artist or not file.title:
         return None
@@ -74,6 +77,7 @@ async def match_artist_group(
     cached = None
     if conn is not None:
         from . import artist_cache
+
         cached = await artist_cache.get(conn, artist)
 
     if cached is not None:
@@ -87,9 +91,12 @@ async def match_artist_group(
         if spotify_artist is None:
             if conn is not None:
                 from . import artist_cache
+
                 await artist_cache.put(
-                    conn, artist,
-                    spotify_artist_id=None, spotify_artist_name=None,
+                    conn,
+                    artist,
+                    spotify_artist_id=None,
+                    spotify_artist_name=None,
                     tracks=[],
                 )
             return [FileMatchResult(f, "no_artist", None, []) for f in files]
@@ -109,8 +116,10 @@ async def match_artist_group(
 
         if conn is not None:
             from . import artist_cache
+
             await artist_cache.put(
-                conn, artist,
+                conn,
+                artist,
                 spotify_artist_id=spotify_artist["id"],
                 spotify_artist_name=spotify_artist.get("name"),
                 tracks=catalog,

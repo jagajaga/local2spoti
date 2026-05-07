@@ -15,9 +15,7 @@ def test_single_chunk_under_capacity():
 
 def test_alpha_split_when_over_capacity():
     artists = (
-        [f"A{i:04d}" for i in range(5000)]
-        + [f"M{i:04d}" for i in range(5000)]
-        + [f"Z{i:04d}" for i in range(2000)]
+        [f"A{i:04d}" for i in range(5000)] + [f"M{i:04d}" for i in range(5000)] + [f"Z{i:04d}" for i in range(2000)]
     )
     files = _files(*artists)
     chunks = chunk_files_alpha(files, chunk_size=9000)
@@ -43,12 +41,10 @@ def test_chunk_name_contains_index_and_total():
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
-import pytest
-
-from local2spoti.db import connect, init_schema
-from local2spoti.playlist import push_matched_to_spotify
-from local2spoti.models import FileStatus, LocalFile
 from local2spoti import repo
+from local2spoti.db import connect, init_schema
+from local2spoti.models import FileStatus, LocalFile
+from local2spoti.playlist import push_matched_to_spotify
 
 
 async def test_push_creates_playlists_and_inserts_track_rows(tmp_path):
@@ -62,12 +58,20 @@ async def test_push_creates_playlists_and_inserts_track_rows(tmp_path):
         await init_schema(conn)
         now = datetime(2026, 5, 4, tzinfo=UTC)
         for i in range(3):
-            await repo.upsert_local_file(conn, LocalFile(
-                path=f"/{i}.mp3", mtime=1, size=1, format="mp3",
-                artist="Daft Punk", title=f"T{i}",
-                spotify_track_id=f"track{i}",
-                status=FileStatus.MATCHED,
-            ), now=now)
+            await repo.upsert_local_file(
+                conn,
+                LocalFile(
+                    path=f"/{i}.mp3",
+                    mtime=1,
+                    size=1,
+                    format="mp3",
+                    artist="Daft Punk",
+                    title=f"T{i}",
+                    spotify_track_id=f"track{i}",
+                    status=FileStatus.MATCHED,
+                ),
+                now=now,
+            )
         result = await push_matched_to_spotify(conn=conn, client=client)
         assert result.added == 3
         assert client.add_tracks.await_count == 1

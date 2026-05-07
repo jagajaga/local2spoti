@@ -23,25 +23,18 @@ async def dashboard(request: Request) -> HTMLResponse:
     counts = await repo.count_by_status(state.db_conn)
     cur = await state.db_conn.execute("SELECT COUNT(*) FROM local_file")
     (total_files,) = await cur.fetchone()
-    cur = await state.db_conn.execute(
-        "SELECT MAX(finished_at) FROM scan_run WHERE status='completed'"
-    )
+    cur = await state.db_conn.execute("SELECT MAX(finished_at) FROM scan_run WHERE status='completed'")
     (last_scan_at,) = await cur.fetchone()
     # Per-method match breakdown so the user can see at a glance how
     # many tracks landed via fingerprint paths (musicbrainz / odesli /
     # isrc) vs the regular Spotify search match.
     cur = await state.db_conn.execute(
-        "SELECT match_method, COUNT(*) FROM local_file "
-        "WHERE spotify_track_id IS NOT NULL GROUP BY match_method"
+        "SELECT match_method, COUNT(*) FROM local_file WHERE spotify_track_id IS NOT NULL GROUP BY match_method"
     )
     by_method = {row[0] or "search": row[1] for row in await cur.fetchall()}
-    cur = await state.db_conn.execute(
-        "SELECT COUNT(*) FROM local_file WHERE isrc IS NOT NULL"
-    )
+    cur = await state.db_conn.execute("SELECT COUNT(*) FROM local_file WHERE isrc IS NOT NULL")
     (isrc_tagged,) = await cur.fetchone()
-    user_row = await (await state.db_conn.execute(
-        "SELECT user_id FROM auth_token WHERE key='spotify'"
-    )).fetchone()
+    user_row = await (await state.db_conn.execute("SELECT user_id FROM auth_token WHERE key='spotify'")).fetchone()
     return _templates().TemplateResponse(
         request,
         "dashboard.html",
@@ -93,8 +86,7 @@ async def files(
 @router.get("/review", response_class=HTMLResponse)
 async def review(request: Request, limit: int = 100000) -> HTMLResponse:
     state = request.app.state.app_state
-    files = await repo.list_files_by_status(state.db_conn, FileStatus.REVIEW,
-                                             limit=limit, offset=0)
+    files = await repo.list_files_by_status(state.db_conn, FileStatus.REVIEW, limit=limit, offset=0)
     cards = []
     for f in files:
         cur = await state.db_conn.execute(
@@ -104,13 +96,23 @@ async def review(request: Request, limit: int = 100000) -> HTMLResponse:
             (f.id,),
         )
         candidates = [
-            {"spotify_track_id": r[0], "artist": r[1], "title": r[2], "album": r[3],
-             "confidence": r[4], "artist_sim": r[5], "title_sim": r[6], "rank": r[7]}
+            {
+                "spotify_track_id": r[0],
+                "artist": r[1],
+                "title": r[2],
+                "album": r[3],
+                "confidence": r[4],
+                "artist_sim": r[5],
+                "title_sim": r[6],
+                "rank": r[7],
+            }
             for r in await cur.fetchall()
         ]
         cards.append({"file": f, "candidates": candidates})
     return _templates().TemplateResponse(
-        request, "review.html", {"cards": cards},
+        request,
+        "review.html",
+        {"cards": cards},
     )
 
 
@@ -122,10 +124,9 @@ async def scan(request: Request) -> HTMLResponse:
 @router.get("/unmatched", response_class=HTMLResponse)
 async def unmatched(request: Request, limit: int = 100000) -> HTMLResponse:
     state = request.app.state.app_state
-    files = await repo.list_files_by_status(state.db_conn, FileStatus.UNMATCHED,
-                                             limit=limit, offset=0)
+    files = await repo.list_files_by_status(state.db_conn, FileStatus.UNMATCHED, limit=limit, offset=0)
     return _templates().TemplateResponse(
-        request, "files.html",
-        {"files": files, "status": "unmatched",
-         "statuses": [s.value for s in FileStatus]},
+        request,
+        "files.html",
+        {"files": files, "status": "unmatched", "statuses": [s.value for s in FileStatus]},
     )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -29,19 +30,24 @@ class ScanResult:
 
 
 async def _stage_discovery(
-    conn: aiosqlite.Connection, library_root: Path, *, now: datetime,
+    conn: aiosqlite.Connection,
+    library_root: Path,
+    *,
+    now: datetime,
     bus: EventBus,
 ) -> int:
     changed = 0
     seen = 0
-    for path, parents in walk_audio_files(library_root):
+    for path, _parents in walk_audio_files(library_root):
         seen += 1
         try:
             st = path.stat()
         except FileNotFoundError:
             continue
         f = LocalFile(
-            path=str(path), mtime=int(st.st_mtime), size=st.st_size,
+            path=str(path),
+            mtime=int(st.st_mtime),
+            size=st.st_size,
             format=path.suffix.lower().lstrip("."),
         )
         if await repo.upsert_local_file(conn, f, now=now):
@@ -62,10 +68,14 @@ async def _stage_metadata(conn: aiosqlite.Connection, *, bus: EventBus) -> None:
         # Without an event the metadata bar stays "idle" forever even
         # though the stage actually ran (incremental rescan with no new
         # files is the common case, so this isn't an error).
-        await bus.publish(ProgressEvent(
-            stage="metadata", processed=0, total=0,
-            message="nothing to extract — no new files since last scan",
-        ))
+        await bus.publish(
+            ProgressEvent(
+                stage="metadata",
+                processed=0,
+                total=0,
+                message="nothing to extract — no new files since last scan",
+            )
+        )
         return
     loop = asyncio.get_event_loop()
     sem = asyncio.Semaphore(16)
@@ -99,8 +109,16 @@ async def _stage_metadata(conn: aiosqlite.Connection, *, bus: EventBus) -> None:
             await conn.execute(
                 """UPDATE local_file SET artist=?, title=?, album=?, track_number=?,
                    duration_ms=?, isrc=?, metadata_source=?, status='scanned' WHERE id=?""",
-                (md.artist, md.title, md.album, md.track_number, md.duration_ms,
-                 md.isrc, source, file_id),
+                (
+                    md.artist,
+                    md.title,
+                    md.album,
+                    md.track_number,
+                    md.duration_ms,
+                    md.isrc,
+                    source,
+                    file_id,
+                ),
             )
             await conn.commit()
             processed += 1
@@ -112,18 +130,26 @@ async def _stage_metadata(conn: aiosqlite.Connection, *, bus: EventBus) -> None:
 
 
 async def _stage_match(
-    conn: aiosqlite.Connection, client: SpotifyClient, threshold: Threshold,
-    *, bus: EventBus, now: datetime,
+    conn: aiosqlite.Connection,
+    client: SpotifyClient,
+    threshold: Threshold,
+    *,
+    bus: EventBus,
+    now: datetime,
 ) -> dict[str, int]:
     cur = await conn.execute(
         "SELECT id, path, artist, title, album, duration_ms, isrc FROM local_file WHERE status='scanned'"
     )
     rows = await cur.fetchall()
     if not rows:
-        await bus.publish(ProgressEvent(
-            stage="match", processed=0, total=0,
-            message="nothing to match — no scanned files",
-        ))
+        await bus.publish(
+            ProgressEvent(
+                stage="match",
+                processed=0,
+                total=0,
+                message="nothing to match — no scanned files",
+            )
+        )
         return {"matched": 0, "review": 0, "unmatched": 0}
     counts = {"matched": 0, "review": 0, "unmatched": 0, "errors": 0}
     total = len(rows)
@@ -139,10 +165,14 @@ async def _stage_match(
     isrc_matched_ids: set[int] = set()
     isrc_files = [r for r in rows if r[6]]
     if isrc_files:
-        await bus.publish(ProgressEvent(
-            stage="match", processed=0, total=total,
-            message=f"ISRC pre-pass: {len(isrc_files)} files have ISRC tags",
-        ))
+        await bus.publish(
+            ProgressEvent(
+                stage="match",
+                processed=0,
+                total=total,
+                message=f"ISRC pre-pass: {len(isrc_files)} files have ISRC tags",
+            )
+        )
         isrc_sem = asyncio.Semaphore(8)
 
         async def _isrc_lookup(row) -> None:
@@ -163,7 +193,8 @@ async def _stage_match(
                 # confidence match.
                 await repo.clear_candidates(conn, file_id)
                 await repo.update_match(
-                    conn, file_id,
+                    conn,
+                    file_id,
                     spotify_track_id=track["id"],
                     confidence=1.0,
                     method="isrc",
@@ -176,22 +207,35 @@ async def _stage_match(
             return_exceptions=True,
         )
         rows = [r for r in rows if r[0] not in isrc_matched_ids]
-        await bus.publish(ProgressEvent(
-            stage="match", processed=len(isrc_matched_ids), total=total,
-            matched=counts["matched"], review=counts["review"],
-            unmatched=counts["unmatched"], errors=counts["errors"],
-            message=(
-                f"ISRC pre-pass done — {len(isrc_matched_ids)} matched "
-                f"directly, {len(isrc_files) - len(isrc_matched_ids)} "
-                f"falling through to artist match"
-            ),
-        ))
+        await bus.publish(
+            ProgressEvent(
+                stage="match",
+                processed=len(isrc_matched_ids),
+                total=total,
+                matched=counts["matched"],
+                review=counts["review"],
+                unmatched=counts["unmatched"],
+                errors=counts["errors"],
+                message=(
+                    f"ISRC pre-pass done — {len(isrc_matched_ids)} matched "
+                    f"directly, {len(isrc_files) - len(isrc_matched_ids)} "
+                    f"falling through to artist match"
+                ),
+            )
+        )
 
     groups: dict[str, list[LocalFile]] = defaultdict(list)
     for r in rows:
         f = LocalFile(
-            id=r[0], path=r[1], mtime=0, size=0, format="",
-            artist=r[2], title=r[3], album=r[4], duration_ms=r[5],
+            id=r[0],
+            path=r[1],
+            mtime=0,
+            size=0,
+            format="",
+            artist=r[2],
+            title=r[3],
+            album=r[4],
+            duration_ms=r[5],
             isrc=r[6],
             status=FileStatus.SCANNED,
         )
@@ -214,38 +258,58 @@ async def _stage_match(
                 # a single bad artist kills the whole match stage.
                 try:
                     results = await match_artist_group(
-                        client=client, artist=files[0].artist or "", files=files,
-                        threshold=threshold, conn=conn,
+                        client=client,
+                        artist=files[0].artist or "",
+                        files=files,
+                        threshold=threshold,
+                        conn=conn,
                     )
                     no_artist_files = [r.file for r in results if r.decision == "no_artist"]
                     if no_artist_files:
                         fallbacks = await match_per_track(
-                            client=client, files=no_artist_files, threshold=threshold,
+                            client=client,
+                            files=no_artist_files,
+                            threshold=threshold,
                         )
                         results = [r for r in results if r.decision != "no_artist"] + fallbacks
                     await _persist_matches(conn, results, now=now, counts=counts)
                     processed += len(files)
-                    await bus.publish(ProgressEvent(
-                        stage="match", processed=processed, total=total,
-                        matched=counts["matched"], review=counts["review"],
-                        unmatched=counts["unmatched"], errors=counts["errors"],
-                        message=f"matched {artist_label}",
-                    ))
+                    await bus.publish(
+                        ProgressEvent(
+                            stage="match",
+                            processed=processed,
+                            total=total,
+                            matched=counts["matched"],
+                            review=counts["review"],
+                            unmatched=counts["unmatched"],
+                            errors=counts["errors"],
+                            message=f"matched {artist_label}",
+                        )
+                    )
                 except Exception as exc:
                     err_msg = str(exc)[:200]
                     for f in files:
                         if f.id is not None:
                             await repo.set_status(
-                                conn, f.id, FileStatus.ERROR, last_error=err_msg,
+                                conn,
+                                f.id,
+                                FileStatus.ERROR,
+                                last_error=err_msg,
                             )
                             counts["errors"] += 1
                     processed += len(files)
-                    await bus.publish(ProgressEvent(
-                        stage="match", processed=processed, total=total,
-                        matched=counts["matched"], review=counts["review"],
-                        unmatched=counts["unmatched"], errors=counts["errors"],
-                        message=f"⚠ {artist_label}: {err_msg[:80]}",
-                    ))
+                    await bus.publish(
+                        ProgressEvent(
+                            stage="match",
+                            processed=processed,
+                            total=total,
+                            matched=counts["matched"],
+                            review=counts["review"],
+                            unmatched=counts["unmatched"],
+                            errors=counts["errors"],
+                            message=f"⚠ {artist_label}: {err_msg[:80]}",
+                        )
+                    )
             finally:
                 current_artists.discard(artist_label)
 
@@ -253,13 +317,17 @@ async def _stage_match(
     # match has completed (e.g. all 12 workers blocked on Spotify rate limit
     # or one worker chewing through Beatles' deluxe-edition pagination). This
     # is what lets the user tell "stalled and dead" from "alive, working".
-    heartbeat_task = asyncio.create_task(_match_heartbeat(
-        bus=bus, counts=counts, total=total,
-        get_processed=lambda: processed,
-        current_artists=current_artists,
-        bucket=client._bucket,  # for pause-remaining reporting
-        stop=heartbeat_stop,
-    ))
+    heartbeat_task = asyncio.create_task(
+        _match_heartbeat(
+            bus=bus,
+            counts=counts,
+            total=total,
+            get_processed=lambda: processed,
+            current_artists=current_artists,
+            bucket=client._bucket,  # for pause-remaining reporting
+            stop=heartbeat_stop,
+        )
+    )
 
     try:
         # return_exceptions=True so even an unanticipated failure path
@@ -271,20 +339,24 @@ async def _stage_match(
         )
     finally:
         heartbeat_stop.set()
-        try:
+        with contextlib.suppress(Exception):
             await heartbeat_task
-        except Exception:
-            pass
 
     err_suffix = f", {counts['errors']} errors" if counts["errors"] else ""
-    await bus.publish(ProgressEvent(
-        stage="match", processed=total, total=total,
-        matched=counts["matched"], review=counts["review"],
-        unmatched=counts["unmatched"], errors=counts["errors"],
-        message=f"done — {counts['matched']} auto-matched, "
-                f"{counts['review']} need review, "
-                f"{counts['unmatched']} unmatched{err_suffix}",
-    ))
+    await bus.publish(
+        ProgressEvent(
+            stage="match",
+            processed=total,
+            total=total,
+            matched=counts["matched"],
+            review=counts["review"],
+            unmatched=counts["unmatched"],
+            errors=counts["errors"],
+            message=f"done — {counts['matched']} auto-matched, "
+            f"{counts['review']} need review, "
+            f"{counts['unmatched']} unmatched{err_suffix}",
+        )
+    )
     return counts
 
 
@@ -310,7 +382,7 @@ async def _match_heartbeat(
         try:
             await asyncio.wait_for(stop.wait(), timeout=interval)
             return  # stop was set
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         processed = get_processed()
         now = time.monotonic()
@@ -321,11 +393,7 @@ async def _match_heartbeat(
             rate = delta / elapsed
             remaining = max(0, total - processed)
             eta_sec = remaining / rate if rate > 0 else None
-            msg = (
-                f"~{rate:.1f}/s, ETA "
-                f"{_fmt_duration(eta_sec)}, "
-                f"{len(current_artists)} workers active"
-            )
+            msg = f"~{rate:.1f}/s, ETA {_fmt_duration(eta_sec)}, {len(current_artists)} workers active"
             if pause_remaining > 0.5:
                 msg += f", rate-limited {pause_remaining:.0f}s remaining"
         else:
@@ -336,16 +404,18 @@ async def _match_heartbeat(
                     f"{pause_remaining:.0f}s, {len(current_artists)} workers parked"
                 )
             else:
-                msg = (
-                    f"slow tick — {len(current_artists)} workers in flight, "
-                    f"current: {active}"
-                )
-        await bus.publish(ProgressEvent(
-            stage="match", processed=processed, total=total,
-            matched=counts["matched"], review=counts["review"],
-            unmatched=counts["unmatched"],
-            message=msg,
-        ))
+                msg = f"slow tick — {len(current_artists)} workers in flight, current: {active}"
+        await bus.publish(
+            ProgressEvent(
+                stage="match",
+                processed=processed,
+                total=total,
+                matched=counts["matched"],
+                review=counts["review"],
+                unmatched=counts["unmatched"],
+                message=msg,
+            )
+        )
         last_processed = processed
         last_time = now
 
@@ -364,8 +434,11 @@ def _fmt_duration(seconds: float | None) -> str:
 
 
 async def _persist_matches(
-    conn: aiosqlite.Connection, results: list[FileMatchResult], *,
-    now: datetime, counts: dict[str, int],
+    conn: aiosqlite.Connection,
+    results: list[FileMatchResult],
+    *,
+    now: datetime,
+    counts: dict[str, int],
 ) -> None:
     for r in results:
         assert r.file.id is not None
@@ -376,7 +449,8 @@ async def _persist_matches(
         await repo.clear_candidates(conn, r.file.id)
         if r.decision == "auto" and r.top_candidate:
             await repo.update_match(
-                conn, r.file.id,
+                conn,
+                r.file.id,
                 spotify_track_id=r.top_candidate.spotify_track_id,
                 confidence=r.top_candidate.confidence,
                 method="auto",
@@ -417,15 +491,23 @@ async def run_scan(
             """UPDATE scan_run SET finished_at=?, status='completed',
                total_files=?, matched_count=?, review_count=?, unmatched_count=?
                WHERE id=?""",
-            (datetime.now(UTC).isoformat(), changed,
-             counts["matched"], counts["review"], counts["unmatched"], run_id),
+            (
+                datetime.now(UTC).isoformat(),
+                changed,
+                counts["matched"],
+                counts["review"],
+                counts["unmatched"],
+                run_id,
+            ),
         )
         await conn.commit()
         await bus.flush()
         return ScanResult(
             processed_files=changed,
-            matched=counts["matched"], review=counts["review"],
-            unmatched=counts["unmatched"], errors=0,
+            matched=counts["matched"],
+            review=counts["review"],
+            unmatched=counts["unmatched"],
+            errors=0,
         )
     except Exception as e:
         await conn.execute(

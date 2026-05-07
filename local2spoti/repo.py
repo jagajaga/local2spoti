@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Iterable
 
 import aiosqlite
 
@@ -33,13 +33,26 @@ FROM local_file WHERE path = ?
 
 def _row_to_local_file(row: tuple) -> LocalFile:
     return LocalFile(
-        id=row[0], path=row[1], mtime=row[2], size=row[3], format=row[4],
-        duration_ms=row[5], artist=row[6], title=row[7], album=row[8],
-        track_number=row[9], isrc=row[10], metadata_source=row[11],
-        status=FileStatus(row[12]), spotify_track_id=row[13],
-        match_confidence=row[14], match_method=row[15],
-        first_seen_at=row[16], last_scanned_at=row[17],
-        last_error=row[18], last_run_id=row[19],
+        id=row[0],
+        path=row[1],
+        mtime=row[2],
+        size=row[3],
+        format=row[4],
+        duration_ms=row[5],
+        artist=row[6],
+        title=row[7],
+        album=row[8],
+        track_number=row[9],
+        isrc=row[10],
+        metadata_source=row[11],
+        status=FileStatus(row[12]),
+        spotify_track_id=row[13],
+        match_confidence=row[14],
+        match_method=row[15],
+        first_seen_at=row[16],
+        last_scanned_at=row[17],
+        last_error=row[18],
+        last_run_id=row[19],
     )
 
 
@@ -66,14 +79,23 @@ async def upsert_local_file(
         await conn.execute(
             _INSERT_FILE,
             {
-                "path": f.path, "mtime": f.mtime, "size": f.size, "format": f.format,
+                "path": f.path,
+                "mtime": f.mtime,
+                "size": f.size,
+                "format": f.format,
                 "duration_ms": f.duration_ms,
-                "artist": f.artist, "title": f.title, "album": f.album,
-                "track_number": f.track_number, "isrc": f.isrc,
+                "artist": f.artist,
+                "title": f.title,
+                "album": f.album,
+                "track_number": f.track_number,
+                "isrc": f.isrc,
                 "metadata_source": f.metadata_source,
-                "status": f.status.value, "spotify_track_id": f.spotify_track_id,
-                "match_confidence": f.match_confidence, "match_method": f.match_method,
-                "first_seen_at": iso, "last_scanned_at": iso,
+                "status": f.status.value,
+                "spotify_track_id": f.spotify_track_id,
+                "match_confidence": f.match_confidence,
+                "match_method": f.match_method,
+                "first_seen_at": iso,
+                "last_scanned_at": iso,
             },
         )
         await conn.commit()
@@ -108,9 +130,7 @@ async def mark_missing_files(conn: aiosqlite.Connection, *, scan_started: dateti
 
 
 async def count_by_status(conn: aiosqlite.Connection) -> dict[FileStatus, int]:
-    cur = await conn.execute(
-        "SELECT status, COUNT(*) FROM local_file GROUP BY status"
-    )
+    cur = await conn.execute("SELECT status, COUNT(*) FROM local_file GROUP BY status")
     out: dict[FileStatus, int] = defaultdict(int)
     for status, n in await cur.fetchall():
         out[FileStatus(status)] = n
@@ -136,8 +156,11 @@ async def update_match(
 
 
 async def set_status(
-    conn: aiosqlite.Connection, file_id: int, status: FileStatus,
-    *, last_error: str | None = None,
+    conn: aiosqlite.Connection,
+    file_id: int,
+    status: FileStatus,
+    *,
+    last_error: str | None = None,
 ) -> None:
     await conn.execute(
         "UPDATE local_file SET status=?, last_error=? WHERE id=?",
@@ -154,7 +177,8 @@ async def clear_candidates(conn: aiosqlite.Connection, file_id: int) -> None:
     fetched against a now-outdated artist/title.
     """
     await conn.execute(
-        "DELETE FROM match_candidate WHERE local_file_id=?", (file_id,),
+        "DELETE FROM match_candidate WHERE local_file_id=?",
+        (file_id,),
     )
 
 
@@ -168,10 +192,18 @@ async def insert_candidates(
     iso = now.isoformat()
     rows = [
         (
-            file_id, c.spotify_track_id, c.spotify_artist, c.spotify_title,
-            c.spotify_album, c.spotify_duration_ms,
-            c.artist_similarity, c.title_similarity, c.duration_delta_ms,
-            c.confidence, c.rank, iso,
+            file_id,
+            c.spotify_track_id,
+            c.spotify_artist,
+            c.spotify_title,
+            c.spotify_album,
+            c.spotify_duration_ms,
+            c.artist_similarity,
+            c.title_similarity,
+            c.duration_delta_ms,
+            c.confidence,
+            c.rank,
+            iso,
         )
         for c in candidates
     ]
@@ -188,7 +220,11 @@ async def insert_candidates(
 
 
 async def list_files_by_status(
-    conn: aiosqlite.Connection, status: FileStatus, *, limit: int = 100, offset: int = 0,
+    conn: aiosqlite.Connection,
+    status: FileStatus,
+    *,
+    limit: int = 100,
+    offset: int = 0,
 ) -> list[LocalFile]:
     cur = await conn.execute(
         _SELECT_FILE_BY_PATH.replace(
@@ -201,7 +237,5 @@ async def list_files_by_status(
 
 
 async def list_unique_artists(conn: aiosqlite.Connection) -> list[str]:
-    cur = await conn.execute(
-        "SELECT DISTINCT artist FROM local_file WHERE status='scanned' AND artist IS NOT NULL"
-    )
+    cur = await conn.execute("SELECT DISTINCT artist FROM local_file WHERE status='scanned' AND artist IS NOT NULL")
     return [r[0] for r in await cur.fetchall()]

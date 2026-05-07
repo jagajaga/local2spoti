@@ -15,9 +15,7 @@ async def refresh_if_expiring(
     threshold_seconds: int = 300,
 ) -> bool:
     """If the spotify token expires within `threshold_seconds`, refresh it."""
-    cur = await conn.execute(
-        "SELECT refresh_token, expires_at FROM auth_token WHERE key='spotify'"
-    )
+    cur = await conn.execute("SELECT refresh_token, expires_at FROM auth_token WHERE key='spotify'")
     row = await cur.fetchone()
     if not row:
         return False

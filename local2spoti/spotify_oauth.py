@@ -11,10 +11,7 @@ import httpx
 AUTHORIZE_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 
-DEFAULT_SCOPE = (
-    "playlist-modify-private playlist-modify-public "
-    "playlist-read-private user-read-private"
-)
+DEFAULT_SCOPE = "playlist-modify-private playlist-modify-public playlist-read-private user-read-private"
 
 
 @dataclass(frozen=True)
@@ -23,7 +20,7 @@ class PKCE:
     challenge: str
 
     @classmethod
-    def generate(cls) -> "PKCE":
+    def generate(cls) -> PKCE:
         verifier = secrets.token_urlsafe(64)[:96]
         digest = hashlib.sha256(verifier.encode()).digest()
         challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
@@ -31,7 +28,12 @@ class PKCE:
 
 
 def build_authorize_url(
-    *, client_id: str, redirect_uri: str, scope: str, state: str, pkce: PKCE,
+    *,
+    client_id: str,
+    redirect_uri: str,
+    scope: str,
+    state: str,
+    pkce: PKCE,
 ) -> str:
     params = {
         "client_id": client_id,
@@ -46,7 +48,11 @@ def build_authorize_url(
 
 
 async def exchange_code(
-    *, code: str, client_id: str, redirect_uri: str, pkce: PKCE,
+    *,
+    code: str,
+    client_id: str,
+    redirect_uri: str,
+    pkce: PKCE,
 ) -> dict:
     async with httpx.AsyncClient(timeout=15.0) as h:
         r = await h.post(

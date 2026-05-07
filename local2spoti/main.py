@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 # Load .env into os.environ before anything else reads it. This lets the
@@ -19,7 +19,8 @@ load_dotenv()
 from .config import load_settings
 from .db import connect, init_schema
 from .logging_config import configure as configure_logging
-from .routes.api import router as api_router, auth_router
+from .routes.api import auth_router
+from .routes.api import router as api_router
 from .routes.ui import router as ui_router
 from .routes.ws import router as ws_router
 from .state import AppState
@@ -27,6 +28,7 @@ from .token_refresh import refresh_loop
 
 try:
     import uvloop
+
     _HAS_UVLOOP = True
 except ImportError:
     _HAS_UVLOOP = False
@@ -61,17 +63,13 @@ async def lifespan(app: FastAPI):
         state.db_conn = conn
         app.state.app_state = state
 
-        refresh_task = asyncio.create_task(
-            refresh_loop(conn=conn, client_id=settings.spotify_client_id)
-        )
+        refresh_task = asyncio.create_task(refresh_loop(conn=conn, client_id=settings.spotify_client_id))
         try:
             yield
         finally:
             refresh_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError, Exception):
                 await refresh_task
-            except (asyncio.CancelledError, Exception):
-                pass
 
 
 def create_app() -> FastAPI:
@@ -118,6 +116,7 @@ def create_app() -> FastAPI:
 
 def run() -> None:
     import uvicorn
+
     if _HAS_UVLOOP:
         uvloop.install()
     settings = load_settings()

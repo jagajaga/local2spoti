@@ -1,5 +1,4 @@
-from httpx import AsyncClient, ASGITransport
-import pytest
+from httpx import ASGITransport, AsyncClient
 
 from local2spoti.main import create_app
 

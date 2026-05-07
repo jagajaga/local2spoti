@@ -1,10 +1,10 @@
 from datetime import UTC, datetime
-import pytest
+
 import pytest_asyncio
 
+from local2spoti import repo
 from local2spoti.db import connect, init_schema
 from local2spoti.models import FileStatus, LocalFile
-from local2spoti import repo
 
 
 @pytest_asyncio.fixture
@@ -47,8 +47,13 @@ async def test_count_by_status(conn):
     for i in range(3):
         await repo.upsert_local_file(
             conn,
-            LocalFile(path=f"/{i}.mp3", mtime=i, size=1, format="mp3",
-                      status=FileStatus.MATCHED if i < 2 else FileStatus.REVIEW),
+            LocalFile(
+                path=f"/{i}.mp3",
+                mtime=i,
+                size=1,
+                format="mp3",
+                status=FileStatus.MATCHED if i < 2 else FileStatus.REVIEW,
+            ),
             now=now,
         )
     counts = await repo.count_by_status(conn)
@@ -59,12 +64,16 @@ async def test_count_by_status(conn):
 async def test_mark_missing(conn):
     now = datetime(2026, 5, 4, tzinfo=UTC)
     later = datetime(2026, 5, 5, tzinfo=UTC)
-    await repo.upsert_local_file(conn,
-        LocalFile(path="/seen.mp3", mtime=1, size=1, format="mp3",
-                  status=FileStatus.MATCHED), now=now)
-    await repo.upsert_local_file(conn,
-        LocalFile(path="/gone.mp3", mtime=1, size=1, format="mp3",
-                  status=FileStatus.MATCHED), now=now)
+    await repo.upsert_local_file(
+        conn,
+        LocalFile(path="/seen.mp3", mtime=1, size=1, format="mp3", status=FileStatus.MATCHED),
+        now=now,
+    )
+    await repo.upsert_local_file(
+        conn,
+        LocalFile(path="/gone.mp3", mtime=1, size=1, format="mp3", status=FileStatus.MATCHED),
+        now=now,
+    )
     await repo.touch_last_scanned(conn, "/seen.mp3", later)
     n = await repo.mark_missing_files(conn, scan_started=later)
     assert n == 1
@@ -77,30 +86,70 @@ from local2spoti.models import MatchCandidate as MC
 
 async def test_clear_candidates_removes_only_target_file_rows(conn):
     now = datetime(2026, 5, 4, tzinfo=UTC)
-    await repo.upsert_local_file(conn, LocalFile(
-        path="/a.mp3", mtime=1, size=1, format="mp3",
-        artist="A", title="T", status=FileStatus.REVIEW,
-    ), now=now)
-    await repo.upsert_local_file(conn, LocalFile(
-        path="/b.mp3", mtime=1, size=1, format="mp3",
-        artist="B", title="T", status=FileStatus.REVIEW,
-    ), now=now)
+    await repo.upsert_local_file(
+        conn,
+        LocalFile(
+            path="/a.mp3",
+            mtime=1,
+            size=1,
+            format="mp3",
+            artist="A",
+            title="T",
+            status=FileStatus.REVIEW,
+        ),
+        now=now,
+    )
+    await repo.upsert_local_file(
+        conn,
+        LocalFile(
+            path="/b.mp3",
+            mtime=1,
+            size=1,
+            format="mp3",
+            artist="B",
+            title="T",
+            status=FileStatus.REVIEW,
+        ),
+        now=now,
+    )
     cur = await conn.execute("SELECT id FROM local_file ORDER BY id")
     a_id, b_id = [r[0] for r in await cur.fetchall()]
 
-    await repo.insert_candidates(conn, a_id, [
-        MC(spotify_track_id="t1", spotify_artist="A", spotify_title="T",
-           artist_similarity=0.9, title_similarity=0.9, confidence=0.9, rank=1),
-    ], now=now)
-    await repo.insert_candidates(conn, b_id, [
-        MC(spotify_track_id="t2", spotify_artist="B", spotify_title="T",
-           artist_similarity=0.9, title_similarity=0.9, confidence=0.9, rank=1),
-    ], now=now)
+    await repo.insert_candidates(
+        conn,
+        a_id,
+        [
+            MC(
+                spotify_track_id="t1",
+                spotify_artist="A",
+                spotify_title="T",
+                artist_similarity=0.9,
+                title_similarity=0.9,
+                confidence=0.9,
+                rank=1,
+            ),
+        ],
+        now=now,
+    )
+    await repo.insert_candidates(
+        conn,
+        b_id,
+        [
+            MC(
+                spotify_track_id="t2",
+                spotify_artist="B",
+                spotify_title="T",
+                artist_similarity=0.9,
+                title_similarity=0.9,
+                confidence=0.9,
+                rank=1,
+            ),
+        ],
+        now=now,
+    )
 
     await repo.clear_candidates(conn, a_id)
 
-    cur = await conn.execute(
-        "SELECT local_file_id FROM match_candidate ORDER BY local_file_id"
-    )
+    cur = await conn.execute("SELECT local_file_id FROM match_candidate ORDER BY local_file_id")
     remaining = [r[0] for r in await cur.fetchall()]
     assert remaining == [b_id]  # only B's candidate left

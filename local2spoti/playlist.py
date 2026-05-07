@@ -61,7 +61,9 @@ class PushResult:
 
 
 async def push_matched_to_spotify(
-    *, conn: aiosqlite.Connection, client: SpotifyClient,
+    *,
+    conn: aiosqlite.Connection,
+    client: SpotifyClient,
 ) -> PushResult:
     """For all matched files not yet in any playlist, create chunked playlists and add."""
     cur = await conn.execute(
@@ -75,10 +77,7 @@ async def push_matched_to_spotify(
     if not rows:
         return PushResult(playlists_created=0, added=0)
 
-    files_dicts = [
-        {"file_id": r[0], "artist": r[1], "spotify_track_id": r[5]}
-        for r in rows
-    ]
+    files_dicts = [{"file_id": r[0], "artist": r[1], "spotify_track_id": r[5]} for r in rows]
     chunks = chunk_files_alpha(files_dicts, chunk_size=9000)
 
     me = await client.me()
@@ -94,8 +93,14 @@ async def push_matched_to_spotify(
             """INSERT INTO playlist (spotify_playlist_id, name, chunk_index, alpha_range,
                                      created_at, track_count)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (spotify_playlist_id, chunk.name, chunk.chunk_index, chunk.alpha_range,
-             now_iso, len(chunk.track_ids)),
+            (
+                spotify_playlist_id,
+                chunk.name,
+                chunk.chunk_index,
+                chunk.alpha_range,
+                now_iso,
+                len(chunk.track_ids),
+            ),
         )
         playlist_db_id = cur.lastrowid
         await conn.commit()
@@ -104,10 +109,7 @@ async def push_matched_to_spotify(
         await client.add_tracks(spotify_playlist_id, uris)
 
         chunk_files = [f for f in files_dicts if f["spotify_track_id"] in set(chunk.track_ids)]
-        rows_to_insert = [
-            (playlist_db_id, f["file_id"], f["spotify_track_id"], now_iso)
-            for f in chunk_files
-        ]
+        rows_to_insert = [(playlist_db_id, f["file_id"], f["spotify_track_id"], now_iso) for f in chunk_files]
         await conn.executemany(
             """INSERT INTO playlist_track (playlist_id, local_file_id, spotify_track_id, added_at)
                VALUES (?, ?, ?, ?)""",

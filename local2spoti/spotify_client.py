@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import httpx
 import orjson
@@ -109,13 +110,16 @@ class SpotifyClient:
             content = orjson.dumps(json) if json is not None else None
             try:
                 r = await self._http.request(
-                    method, path,
+                    method,
+                    path,
                     params=params,
                     content=content,
                     headers={"Content-Type": "application/json"} if json is not None else None,
                 )
             except (
-                httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError,
+                httpx.ConnectError,
+                httpx.TimeoutException,
+                httpx.NetworkError,
                 httpx.RemoteProtocolError,
             ):
                 # Network blip — DNS hiccup, captive portal, brief WiFi
@@ -168,7 +172,11 @@ class SpotifyClient:
             return orjson.loads(r.content) if r.content else {}
 
     async def search_tracks(
-        self, artist: str, title: str, *, limit: int = 5,
+        self,
+        artist: str,
+        title: str,
+        *,
+        limit: int = 5,
     ) -> list[dict[str, Any]]:
         q = f'track:"{title}" artist:"{artist}"'
         data = await self._get("/search", q=q, type="track", limit=limit)
@@ -182,7 +190,10 @@ class SpotifyClient:
         Returns the track dict on hit, None on miss/empty results.
         """
         data = await self._get(
-            "/search", q=f"isrc:{isrc}", type="track", limit=1,
+            "/search",
+            q=f"isrc:{isrc}",
+            type="track",
+            limit=1,
         )
         items = data.get("tracks", {}).get("items", [])
         return items[0] if items else None
@@ -199,7 +210,8 @@ class SpotifyClient:
             data = await self._get(
                 f"/artists/{artist_id}/albums",
                 include_groups="album,single,compilation",
-                limit=50, offset=offset,
+                limit=50,
+                offset=offset,
             )
             items = data.get("items", [])
             out.extend(items)

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 
-class FileStatus(str, Enum):
+class FileStatus(StrEnum):
     NEW = "new"
     SCANNED = "scanned"
     MATCHED = "matched"
@@ -14,7 +14,7 @@ class FileStatus(str, Enum):
     MISSING = "missing"
 
 
-class MetadataSource(str, Enum):
+class MetadataSource(StrEnum):
     TAGS = "tags"
     FILENAME = "filename"
     ACOUSTID = "acoustid"

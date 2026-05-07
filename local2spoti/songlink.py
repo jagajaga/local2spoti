@@ -24,19 +24,14 @@ from .ratelimit import TokenBucket
 
 _ODESLI_BASE = "https://api.song.link/v1-alpha.1"
 
-_USER_AGENT = (
-    f"Local2Spoti/{__version__} "
-    "( https://github.com/local2spoti - local audio library to Spotify )"
-)
+_USER_AGENT = f"Local2Spoti/{__version__} ( https://github.com/local2spoti - local audio library to Spotify )"
 
 # Odesli's documented public limit is 10 rpm. Pick 0.15/sec (= 9/min) to
 # stay safely under it; capacity=2 lets quick bursts through without
 # trickle-stalling the deep_scan loop.
 _ODESLI_BUCKET = TokenBucket(rate=0.15, capacity=2.0)
 
-_SPOTIFY_TRACK_URL_RE = re.compile(
-    r"(?:https?://open\.spotify\.com/track/|spotify:track:)([A-Za-z0-9]{22})"
-)
+_SPOTIFY_TRACK_URL_RE = re.compile(r"(?:https?://open\.spotify\.com/track/|spotify:track:)([A-Za-z0-9]{22})")
 
 
 class SongLinkClient:

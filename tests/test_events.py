@@ -1,5 +1,4 @@
 import asyncio
-import pytest
 
 from local2spoti.events import EventBus, ProgressEvent
 

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Literal
 
 from .normalize import similarity
 
 
-class Threshold(str, Enum):
+class Threshold(StrEnum):
     STRICT = "strict"
     BALANCED = "balanced"
     LOOSE = "loose"
@@ -41,10 +41,9 @@ def score_candidate(
 
     album_match = False
     album_bonus = 0.0
-    if local_album and spotify_album:
-        if similarity(local_album, spotify_album) >= 0.90:
-            album_match = True
-            album_bonus = 0.05
+    if local_album and spotify_album and similarity(local_album, spotify_album) >= 0.90:
+        album_match = True
+        album_bonus = 0.05
 
     delta: int | None = None
     dur_bonus = 0.0

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import aiosqlite
 
@@ -23,9 +22,7 @@ class AppState:
     # Each 429 we hit pauses the whole bucket for Retry-After seconds, so
     # avoiding 429s in the first place is much faster than 'go faster +
     # hope nothing trips'.
-    spotify_bucket: TokenBucket = field(
-        default_factory=lambda: TokenBucket(rate=2.0, capacity=15.0)
-    )
+    spotify_bucket: TokenBucket = field(default_factory=lambda: TokenBucket(rate=2.0, capacity=15.0))
     # Three independent task slots so a Spotify match, an AcoustID deep
     # scan, and an AI matching run can all be in flight simultaneously.
     # Each endpoint only gates on its own slot; the Stop button cancels
@@ -36,7 +33,4 @@ class AppState:
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
 
     def any_job_running(self) -> bool:
-        for t in (self.scan_task, self.deep_scan_task, self.ai_scan_task):
-            if t is not None and not t.done():
-                return True
-        return False
+        return any(t is not None and not t.done() for t in (self.scan_task, self.deep_scan_task, self.ai_scan_task))

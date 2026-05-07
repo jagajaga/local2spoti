@@ -9,7 +9,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import httpx
-import pytest
 import respx
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
@@ -24,6 +23,7 @@ from local2spoti.models import FileStatus, LocalFile
 def _claude_response(items: list[dict]) -> dict:
     """Build a fake Anthropic /v1/messages response containing a JSON-schema text block."""
     import orjson
+
     return {
         "id": "msg_test",
         "type": "message",
@@ -40,18 +40,35 @@ def _claude_response(items: list[dict]) -> dict:
 async def test_aiclient_suggests_metadata_high_confidence(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     respx.post("https://api.anthropic.com/v1/messages").mock(
-        return_value=httpx.Response(200, json=_claude_response([
-            {"id": 1, "artist": "Daft Punk", "title": "Around the World",
-             "album": "Homework", "confidence": "high",
-             "reasoning": "filename clearly matches"},
-        ]))
+        return_value=httpx.Response(
+            200,
+            json=_claude_response(
+                [
+                    {
+                        "id": 1,
+                        "artist": "Daft Punk",
+                        "title": "Around the World",
+                        "album": "Homework",
+                        "confidence": "high",
+                        "reasoning": "filename clearly matches",
+                    },
+                ]
+            ),
+        )
     )
     client = AIClient(api_key="test-key", model="claude-opus-4-7")
     try:
-        out = await client.suggest_metadata([
-            {"id": 1, "path": "/m/Daft Punk/Homework/Around the World.mp3",
-             "artist": None, "title": None, "album": None},
-        ])
+        out = await client.suggest_metadata(
+            [
+                {
+                    "id": 1,
+                    "path": "/m/Daft Punk/Homework/Around the World.mp3",
+                    "artist": None,
+                    "title": None,
+                    "album": None,
+                },
+            ]
+        )
     finally:
         await client.aclose()
 
@@ -67,16 +84,29 @@ async def test_aiclient_suggests_metadata_high_confidence(monkeypatch):
 async def test_aiclient_handles_unparseable_path(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     respx.post("https://api.anthropic.com/v1/messages").mock(
-        return_value=httpx.Response(200, json=_claude_response([
-            {"id": 5, "artist": None, "title": None, "album": None,
-             "confidence": "none", "reasoning": "random hex filename"},
-        ]))
+        return_value=httpx.Response(
+            200,
+            json=_claude_response(
+                [
+                    {
+                        "id": 5,
+                        "artist": None,
+                        "title": None,
+                        "album": None,
+                        "confidence": "none",
+                        "reasoning": "random hex filename",
+                    },
+                ]
+            ),
+        )
     )
     client = AIClient(api_key="test-key")
     try:
-        out = await client.suggest_metadata([
-            {"id": 5, "path": "/m/8a3f0c.mp3", "artist": None, "title": None, "album": None},
-        ])
+        out = await client.suggest_metadata(
+            [
+                {"id": 5, "path": "/m/8a3f0c.mp3", "artist": None, "title": None, "album": None},
+            ]
+        )
     finally:
         await client.aclose()
 
@@ -86,14 +116,17 @@ async def test_aiclient_handles_unparseable_path(monkeypatch):
 
 def test_suggestion_usable_property():
     """Pure unit: usability rules."""
-    high = Suggestion(file_id=1, artist="A", title="T", album=None,
-                      confidence="high", reasoning="")
-    none = Suggestion(file_id=2, artist=None, title=None, album=None,
-                      confidence="none", reasoning="")
-    no_title = Suggestion(file_id=3, artist="A", title=None, album=None,
-                          confidence="medium", reasoning="")
-    none_with_text = Suggestion(file_id=4, artist="A", title="T", album=None,
-                                confidence="none", reasoning="hallucination guard")
+    high = Suggestion(file_id=1, artist="A", title="T", album=None, confidence="high", reasoning="")
+    none = Suggestion(file_id=2, artist=None, title=None, album=None, confidence="none", reasoning="")
+    no_title = Suggestion(file_id=3, artist="A", title=None, album=None, confidence="medium", reasoning="")
+    none_with_text = Suggestion(
+        file_id=4,
+        artist="A",
+        title="T",
+        album=None,
+        confidence="none",
+        reasoning="hallucination guard",
+    )
     assert high.usable
     assert not none.usable
     assert not no_title.usable
@@ -114,37 +147,58 @@ async def test_ai_scan_endpoint_happy_path(tmp_path, monkeypatch):
         await init_schema(conn)
         now = datetime(2026, 5, 4, tzinfo=UTC)
         for i in range(2):
-            await repo.upsert_local_file(conn, LocalFile(
-                path=f"/m/track{i}.mp3", mtime=1, size=1, format="mp3",
-                status=FileStatus.UNMATCHED,
-            ), now=now)
+            await repo.upsert_local_file(
+                conn,
+                LocalFile(
+                    path=f"/m/track{i}.mp3",
+                    mtime=1,
+                    size=1,
+                    format="mp3",
+                    status=FileStatus.UNMATCHED,
+                ),
+                now=now,
+            )
 
     respx.post("https://api.anthropic.com/v1/messages").mock(
-        return_value=httpx.Response(200, json=_claude_response([
-            {"id": 1, "artist": "Beatles", "title": "Hey Jude",
-             "album": None, "confidence": "high", "reasoning": "..."},
-            {"id": 2, "artist": None, "title": None, "album": None,
-             "confidence": "none", "reasoning": "..."},
-        ]))
+        return_value=httpx.Response(
+            200,
+            json=_claude_response(
+                [
+                    {
+                        "id": 1,
+                        "artist": "Beatles",
+                        "title": "Hey Jude",
+                        "album": None,
+                        "confidence": "high",
+                        "reasoning": "...",
+                    },
+                    {
+                        "id": 2,
+                        "artist": None,
+                        "title": None,
+                        "album": None,
+                        "confidence": "none",
+                        "reasoning": "...",
+                    },
+                ]
+            ),
+        )
     )
 
     app = create_app()
-    async with LifespanManager(app):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            r = await c.post("/api/ai_scan")
-            assert r.status_code == 200
-            assert r.json()["ok"] is True
-            assert "AI scan started" in r.json()["message"]
+    async with LifespanManager(app), AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.post("/api/ai_scan")
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        assert "AI scan started" in r.json()["message"]
 
-            # Wait for the background task to complete.
-            task = app.state.app_state.ai_scan_task
-            await asyncio.wait_for(task, timeout=5.0)
+        # Wait for the background task to complete.
+        task = app.state.app_state.ai_scan_task
+        await asyncio.wait_for(task, timeout=5.0)
 
     # DB state after the task ran.
     async with connect(db) as conn:
-        cur = await conn.execute(
-            "SELECT artist, title, status, metadata_source FROM local_file WHERE id=1"
-        )
+        cur = await conn.execute("SELECT artist, title, status, metadata_source FROM local_file WHERE id=1")
         artist, title, status, source = await cur.fetchone()
     assert artist == "Beatles"
     assert title == "Hey Jude"
@@ -156,8 +210,7 @@ async def test_ai_scan_rejects_missing_api_key(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     app = create_app()
-    async with LifespanManager(app):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            r = await c.post("/api/ai_scan")
+    async with LifespanManager(app), AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.post("/api/ai_scan")
     assert r.status_code == 400
     assert "ANTHROPIC_API_KEY" in r.json()["error"]

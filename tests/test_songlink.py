@@ -15,14 +15,17 @@ from local2spoti.songlink import SongLinkClient
 async def test_resolves_apple_music_url_to_spotify_track_id():
     apple_url = "https://music.apple.com/us/album/abc/123?i=456"
     respx.get("https://api.song.link/v1-alpha.1/links").mock(
-        return_value=httpx.Response(200, json={
-            "linksByPlatform": {
-                "spotify": {
-                    "url": "https://open.spotify.com/track/4iV5W9uYEdYUVa79Axb7Rh",
+        return_value=httpx.Response(
+            200,
+            json={
+                "linksByPlatform": {
+                    "spotify": {
+                        "url": "https://open.spotify.com/track/4iV5W9uYEdYUVa79Axb7Rh",
+                    },
+                    "appleMusic": {"url": apple_url},
                 },
-                "appleMusic": {"url": apple_url},
             },
-        })
+        )
     )
     client = SongLinkClient()
     try:
@@ -37,12 +40,15 @@ async def test_returns_none_when_no_spotify_in_response():
     """Some niche releases have an Apple URL on Odesli but no Spotify
     equivalent. We treat that as a clean miss."""
     respx.get("https://api.song.link/v1-alpha.1/links").mock(
-        return_value=httpx.Response(200, json={
-            "linksByPlatform": {
-                "appleMusic": {"url": "https://music.apple.com/us/album/x/1"},
-                "deezer":     {"url": "https://www.deezer.com/track/2"},
+        return_value=httpx.Response(
+            200,
+            json={
+                "linksByPlatform": {
+                    "appleMusic": {"url": "https://music.apple.com/us/album/x/1"},
+                    "deezer": {"url": "https://www.deezer.com/track/2"},
+                },
             },
-        })
+        )
     )
     client = SongLinkClient()
     try:

@@ -1,4 +1,4 @@
-from local2spoti.normalize import normalize_artist, normalize_title, similarity, alpha_bucket
+from local2spoti.normalize import alpha_bucket, normalize_artist, normalize_title, similarity
 
 
 def test_strip_feat():

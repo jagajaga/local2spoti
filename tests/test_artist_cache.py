@@ -26,11 +26,20 @@ async def test_cache_miss_returns_none(conn):
 
 
 async def test_positive_round_trip(conn):
-    tracks = [{"id": "t1", "name": "Track One", "duration_ms": 200000,
-               "artists": [{"name": "Beach Boys"}], "album": {"name": "Pet Sounds"}}]
+    tracks = [
+        {
+            "id": "t1",
+            "name": "Track One",
+            "duration_ms": 200000,
+            "artists": [{"name": "Beach Boys"}],
+            "album": {"name": "Pet Sounds"},
+        }
+    ]
     await artist_cache.put(
-        conn, "Beach Boys",
-        spotify_artist_id="art1", spotify_artist_name="The Beach Boys",
+        conn,
+        "Beach Boys",
+        spotify_artist_id="art1",
+        spotify_artist_name="The Beach Boys",
         tracks=tracks,
     )
     cached = await artist_cache.get(conn, "Beach Boys")
@@ -44,8 +53,10 @@ async def test_normalization_collapses_case(conn):
     """Normalized name is the cache key, so 'beach boys' and 'BEACH BOYS'
     hit the same row."""
     await artist_cache.put(
-        conn, "Beach Boys",
-        spotify_artist_id="art1", spotify_artist_name="The Beach Boys",
+        conn,
+        "Beach Boys",
+        spotify_artist_id="art1",
+        spotify_artist_name="The Beach Boys",
         tracks=[],
     )
     assert await artist_cache.get(conn, "BEACH BOYS") is not None
@@ -55,8 +66,11 @@ async def test_normalization_collapses_case(conn):
 async def test_negative_cache(conn):
     """Negative result also gets cached (so we don't re-search every time)."""
     await artist_cache.put(
-        conn, "Definitely Not Real Artist",
-        spotify_artist_id=None, spotify_artist_name=None, tracks=[],
+        conn,
+        "Definitely Not Real Artist",
+        spotify_artist_id=None,
+        spotify_artist_name=None,
+        tracks=[],
     )
     cached = await artist_cache.get(conn, "Definitely Not Real Artist")
     assert cached is not None
@@ -73,8 +87,7 @@ async def test_expired_entry_treated_as_miss(conn):
            (artist_name_normalized, spotify_artist_id, spotify_artist_name,
             tracks_json, fetched_at, expires_at)
            VALUES ('expired', 'art1', 'Old Artist', '[]', ?, ?)""",
-        (yesterday.isoformat(),
-         (yesterday + timedelta(hours=1)).isoformat()),
+        (yesterday.isoformat(), (yesterday + timedelta(hours=1)).isoformat()),
     )
     await conn.commit()
     assert await artist_cache.get(conn, "expired") is None
@@ -87,22 +100,40 @@ async def test_match_artist_group_uses_cache_on_second_call(conn):
     client = AsyncMock()
     client.search_artist.return_value = {"id": "art1", "name": "Daft Punk"}
     client.artist_albums.return_value = [{"id": "alb1", "name": "Homework"}]
-    client.albums_batch.return_value = [{
-        "id": "alb1", "name": "Homework", "tracks": {"items": [
-            {"id": "t1", "name": "Around the World", "duration_ms": 423000,
-             "artists": [{"name": "Daft Punk"}]},
-        ]},
-    }]
+    client.albums_batch.return_value = [
+        {
+            "id": "alb1",
+            "name": "Homework",
+            "tracks": {
+                "items": [
+                    {
+                        "id": "t1",
+                        "name": "Around the World",
+                        "duration_ms": 423000,
+                        "artists": [{"name": "Daft Punk"}],
+                    },
+                ]
+            },
+        }
+    ]
     file = LocalFile(
-        path="/x.mp3", mtime=1, size=1, format="mp3",
-        artist="Daft Punk", title="Around the World",
-        duration_ms=423000, status=FileStatus.SCANNED,
+        path="/x.mp3",
+        mtime=1,
+        size=1,
+        format="mp3",
+        artist="Daft Punk",
+        title="Around the World",
+        duration_ms=423000,
+        status=FileStatus.SCANNED,
     )
 
     # First call → fetches from Spotify, stores in cache
     results = await match_artist_group(
-        client=client, artist="Daft Punk", files=[file],
-        threshold=Threshold.BALANCED, conn=conn,
+        client=client,
+        artist="Daft Punk",
+        files=[file],
+        threshold=Threshold.BALANCED,
+        conn=conn,
     )
     assert results[0].decision == "auto"
     assert client.search_artist.await_count == 1
@@ -114,8 +145,11 @@ async def test_match_artist_group_uses_cache_on_second_call(conn):
     client.artist_albums.reset_mock()
     client.albums_batch.reset_mock()
     results2 = await match_artist_group(
-        client=client, artist="Daft Punk", files=[file],
-        threshold=Threshold.BALANCED, conn=conn,
+        client=client,
+        artist="Daft Punk",
+        files=[file],
+        threshold=Threshold.BALANCED,
+        conn=conn,
     )
     assert results2[0].decision == "auto"
     assert client.search_artist.await_count == 0
@@ -129,18 +163,28 @@ async def test_negative_cache_short_circuits_no_artist(conn):
     subsequent files for that artist return no_artist immediately
     without hitting search."""
     await artist_cache.put(
-        conn, "Mystery Artist",
-        spotify_artist_id=None, spotify_artist_name=None, tracks=[],
+        conn,
+        "Mystery Artist",
+        spotify_artist_id=None,
+        spotify_artist_name=None,
+        tracks=[],
     )
     client = AsyncMock()
     file = LocalFile(
-        path="/x.mp3", mtime=1, size=1, format="mp3",
-        artist="Mystery Artist", title="X",
+        path="/x.mp3",
+        mtime=1,
+        size=1,
+        format="mp3",
+        artist="Mystery Artist",
+        title="X",
         status=FileStatus.SCANNED,
     )
     results = await match_artist_group(
-        client=client, artist="Mystery Artist", files=[file],
-        threshold=Threshold.BALANCED, conn=conn,
+        client=client,
+        artist="Mystery Artist",
+        files=[file],
+        threshold=Threshold.BALANCED,
+        conn=conn,
     )
     assert results[0].decision == "no_artist"
     assert client.search_artist.await_count == 0  # cache short-circuit

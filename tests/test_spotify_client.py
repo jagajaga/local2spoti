@@ -15,11 +15,22 @@ def client():
 @respx.mock
 async def test_search_tracks(client):
     respx.get("https://api.spotify.com/v1/search").mock(
-        return_value=httpx.Response(200, json={"tracks": {"items": [
-            {"id": "abc", "name": "Around the World",
-             "artists": [{"name": "Daft Punk"}],
-             "album": {"name": "Homework"}, "duration_ms": 423000}
-        ]}})
+        return_value=httpx.Response(
+            200,
+            json={
+                "tracks": {
+                    "items": [
+                        {
+                            "id": "abc",
+                            "name": "Around the World",
+                            "artists": [{"name": "Daft Punk"}],
+                            "album": {"name": "Homework"},
+                            "duration_ms": 423000,
+                        }
+                    ]
+                }
+            },
+        )
     )
     items = await client.search_tracks("Daft Punk", "Around the World", limit=5)
     assert len(items) == 1
@@ -31,10 +42,21 @@ async def test_search_track_by_isrc_returns_first_track(client):
     """ISRC lookup is q=isrc:XXX&type=track&limit=1; we return the single
     match (or None for an empty items array)."""
     route = respx.get("https://api.spotify.com/v1/search").mock(
-        return_value=httpx.Response(200, json={"tracks": {"items": [
-            {"id": "deterministic-id", "name": "Around the World",
-             "artists": [{"name": "Daft Punk"}], "duration_ms": 423000},
-        ]}})
+        return_value=httpx.Response(
+            200,
+            json={
+                "tracks": {
+                    "items": [
+                        {
+                            "id": "deterministic-id",
+                            "name": "Around the World",
+                            "artists": [{"name": "Daft Punk"}],
+                            "duration_ms": 423000,
+                        },
+                    ]
+                }
+            },
+        )
     )
     track = await client.search_track_by_isrc("GBAYE9700675")
     assert track is not None
@@ -56,9 +78,7 @@ async def test_search_track_by_isrc_returns_none_on_miss(client):
 @respx.mock
 async def test_search_artist(client):
     respx.get("https://api.spotify.com/v1/search").mock(
-        return_value=httpx.Response(200, json={"artists": {"items": [
-            {"id": "xyz", "name": "Daft Punk"}
-        ]}})
+        return_value=httpx.Response(200, json={"artists": {"items": [{"id": "xyz", "name": "Daft Punk"}]}})
     )
     artist = await client.search_artist("Daft Punk")
     assert artist["id"] == "xyz"
@@ -67,10 +87,16 @@ async def test_search_artist(client):
 @respx.mock
 async def test_artist_albums(client):
     respx.get("https://api.spotify.com/v1/artists/xyz/albums").mock(
-        return_value=httpx.Response(200, json={"items": [
-            {"id": "alb1", "name": "Homework"},
-            {"id": "alb2", "name": "Discovery"},
-        ], "next": None})
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [
+                    {"id": "alb1", "name": "Homework"},
+                    {"id": "alb2", "name": "Discovery"},
+                ],
+                "next": None,
+            },
+        )
     )
     albums = await client.artist_albums("xyz")
     assert [a["id"] for a in albums] == ["alb1", "alb2"]
@@ -79,13 +105,27 @@ async def test_artist_albums(client):
 @respx.mock
 async def test_albums_batch(client):
     respx.get("https://api.spotify.com/v1/albums").mock(
-        return_value=httpx.Response(200, json={"albums": [
-            {"id": "alb1", "name": "Homework",
-             "tracks": {"items": [
-                 {"id": "t1", "name": "Da Funk", "duration_ms": 322000,
-                  "artists": [{"name": "Daft Punk"}]}
-             ]}},
-        ]})
+        return_value=httpx.Response(
+            200,
+            json={
+                "albums": [
+                    {
+                        "id": "alb1",
+                        "name": "Homework",
+                        "tracks": {
+                            "items": [
+                                {
+                                    "id": "t1",
+                                    "name": "Da Funk",
+                                    "duration_ms": 322000,
+                                    "artists": [{"name": "Daft Punk"}],
+                                }
+                            ]
+                        },
+                    },
+                ]
+            },
+        )
     )
     albums = await client.albums_batch(["alb1"])
     assert albums[0]["tracks"]["items"][0]["id"] == "t1"
@@ -115,8 +155,7 @@ async def test_403_unavailable_in_country_treated_as_rate_limit(client):
             httpx.Response(
                 403,
                 headers={"Retry-After": "0"},
-                json={"error": {"status": 403,
-                                "message": "Spotify is unavailable in this country"}},
+                json={"error": {"status": 403, "message": "Spotify is unavailable in this country"}},
             ),
             httpx.Response(200, json={"tracks": {"items": []}}),
         ]
@@ -133,8 +172,7 @@ async def test_real_403_still_raises(client):
     respx.get("https://api.spotify.com/v1/search").mock(
         return_value=httpx.Response(
             403,
-            json={"error": {"status": 403,
-                            "message": "Insufficient client scope"}},
+            json={"error": {"status": 403, "message": "Insufficient client scope"}},
         )
     )
     with pytest.raises(SpotifyError):
@@ -142,22 +180,25 @@ async def test_real_403_still_raises(client):
 
 
 def test_soft_rate_limit_403_helper_recognizes_known_messages():
-    from local2spoti.spotify_client import _is_soft_rate_limit_403
     import httpx as _httpx
+
+    from local2spoti.spotify_client import _is_soft_rate_limit_403
 
     def _mk(status, body):
         # Build a stripped-down Response with the right status and body
         return _httpx.Response(
-            status, content=body.encode("utf-8"),
+            status,
+            content=body.encode("utf-8"),
             headers={"content-type": "application/json"},
         )
 
-    assert _is_soft_rate_limit_403(_mk(403,
-        '{"error":{"status":403,"message":"Spotify is unavailable in this country"}}'))
+    assert _is_soft_rate_limit_403(
+        _mk(403, '{"error":{"status":403,"message":"Spotify is unavailable in this country"}}')
+    )
     assert _is_soft_rate_limit_403(_mk(403, '{"error":"rate limit exceeded"}'))
     assert not _is_soft_rate_limit_403(_mk(403, '{"error":{"message":"insufficient scope"}}'))
     assert not _is_soft_rate_limit_403(_mk(401, '{"error":"unauthorized"}'))
-    assert not _is_soft_rate_limit_403(_mk(200, '{}'))
+    assert not _is_soft_rate_limit_403(_mk(200, "{}"))
 
 
 @respx.mock
@@ -169,7 +210,8 @@ async def test_connection_error_retried_until_success(client, monkeypatch):
     proving the retry behavior, not waiting out the real 60s default.
     """
     monkeypatch.setattr(
-        "local2spoti.spotify_client._DEFAULT_RATE_LIMIT_PAUSE_SECONDS", 0.01,
+        "local2spoti.spotify_client._DEFAULT_RATE_LIMIT_PAUSE_SECONDS",
+        0.01,
     )
     route = respx.get("https://api.spotify.com/v1/search").mock(
         side_effect=[

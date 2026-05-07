@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 
 import mutagen
 from mutagen.easyid3 import EasyID3
@@ -31,7 +31,9 @@ _PAT_TRACK_TITLE = re.compile(r"^\s*(\d{1,3})[\s.\-_]+(.+)$")
 
 
 def parse_filename(
-    filename: str, *, parents: tuple[str, ...] = (),
+    filename: str,
+    *,
+    parents: tuple[str, ...] = (),
 ) -> tuple[str | None, str | None, int | None]:
     """Parse `filename` (basename) into (artist, title, track_number).
 
@@ -165,6 +167,7 @@ def walk_audio_files(root: Path) -> Iterator[tuple[Path, tuple[str, ...]]]:
     Uses os.scandir for speed at large library sizes. Hidden files and directories
     (dotfiles, AppleDouble `._*` files) are skipped.
     """
+
     def _walk(d: Path, parents: tuple[str, ...]) -> Iterator[tuple[Path, tuple[str, ...]]]:
         try:
             entries = list(os.scandir(d))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,12 +53,15 @@ async def fingerprint(path: Path, *, timeout: float = 30.0) -> tuple[int, str] |
     if not fpcalc_available():
         return None
     proc = await asyncio.create_subprocess_exec(
-        "fpcalc", "-json", str(path),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        "fpcalc",
+        "-json",
+        str(path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         # fpcalc is stuck (slow/dead USB drive, corrupt file, etc.). Send
         # SIGKILL, but bound the post-kill wait too — on macOS, a process
         # blocked in a kernel I/O wait won't die immediately even on
@@ -65,10 +69,8 @@ async def fingerprint(path: Path, *, timeout: float = 30.0) -> tuple[int, str] |
         # against an unresponsive USB drive can be minutes. After 5s we
         # give up on the wait and let Python/OS reap the zombie later.
         proc.kill()
-        try:
+        with contextlib.suppress(asyncio.TimeoutError, Exception):
             await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except (asyncio.TimeoutError, Exception):
-            pass
         return None
     if proc.returncode != 0:
         return None
@@ -123,7 +125,8 @@ class AcoustidClient:
             return None
         if r.status_code != 200:
             raise AcoustidError(
-                code=-1, message=f"HTTP {r.status_code} {r.text[:200]}",
+                code=-1,
+                message=f"HTTP {r.status_code} {r.text[:200]}",
             )
         data = r.json()
         if data.get("status") == "error":

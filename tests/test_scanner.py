@@ -1,4 +1,3 @@
-from pathlib import Path
 from local2spoti.scanner import parse_filename
 
 
@@ -33,8 +32,7 @@ def test_unicode_filename():
     assert t == "Hyperballad"
 
 
-import pytest
-from local2spoti.scanner import read_tags, ParsedMetadata
+from local2spoti.scanner import read_tags
 
 
 def test_read_tags_mp3(make_mp3):
@@ -85,6 +83,7 @@ def test_walk_skips_appledouble_files(tmp_path):
     (tmp_path / "._Top Level.mp3").touch()
 
     from local2spoti.scanner import walk_audio_files
+
     out = sorted(p.name for p, _ in walk_audio_files(tmp_path))
     assert out == ["Real Track.mp3"]
 
@@ -99,6 +98,7 @@ def test_walk_skips_dot_directories(tmp_path):
     (tmp_path / ".Spotlight-V100" / "x.mp3").touch()
 
     from local2spoti.scanner import walk_audio_files
+
     out = sorted(p.name for p, _ in walk_audio_files(tmp_path))
     assert out == ["song.mp3"]
 
@@ -111,6 +111,7 @@ def test_walk_skips_ds_store_and_iTunes_metadata(tmp_path):
     (tmp_path / "._iTunes Library.itl").touch()
 
     from local2spoti.scanner import walk_audio_files
+
     out = sorted(p.name for p, _ in walk_audio_files(tmp_path))
     assert out == ["track.mp3"]
 
@@ -153,6 +154,7 @@ def test_read_tags_extracts_isrc_from_id3(make_mp3):
     surface it via the unified `isrc` key. Real MP3 (via ffmpeg) is
     required because mutagen needs valid frame headers to read tags."""
     from mutagen.id3 import ID3, TSRC
+
     p = make_mp3("isrc.mp3")
     tag = ID3(str(p))
     tag.add(TSRC(encoding=3, text="GBAYE9700675"))
@@ -164,6 +166,7 @@ def test_read_tags_extracts_isrc_from_id3(make_mp3):
 def test_is_hidden_classifier():
     """Pure unit: covers every prefix we need to filter."""
     from local2spoti.scanner import _is_hidden
+
     assert _is_hidden(".DS_Store")
     assert _is_hidden("._Track.mp3")
     assert _is_hidden(".Spotlight-V100")

@@ -1,6 +1,3 @@
-import asyncio
-from pathlib import Path
-
 import pytest
 
 from local2spoti.db import connect, init_schema
@@ -11,9 +8,7 @@ async def test_schema_creates_all_tables(tmp_path):
     db = tmp_path / "test.db"
     async with connect(db) as conn:
         await init_schema(conn)
-        cur = await conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        )
+        cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         rows = [r[0] for r in await cur.fetchall()]
     assert rows == [
         "artist_catalog",

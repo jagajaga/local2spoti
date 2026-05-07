@@ -1,13 +1,13 @@
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
-from httpx import AsyncClient, ASGITransport
-import pytest
-from asgi_lifespan import LifespanManager
 
+from asgi_lifespan import LifespanManager
+from httpx import ASGITransport, AsyncClient
+
+from local2spoti import repo
 from local2spoti.db import connect, init_schema
 from local2spoti.main import create_app
 from local2spoti.models import FileStatus, LocalFile
-from local2spoti import repo
 
 
 async def test_push_endpoint_returns_count(tmp_path, monkeypatch):
@@ -22,11 +22,20 @@ async def test_push_endpoint_returns_count(tmp_path, monkeypatch):
                VALUES ('spotify','at','rt','2099-01-01T00:00:00','x','user1')"""
         )
         await conn.commit()
-        await repo.upsert_local_file(conn, LocalFile(
-            path="/x.mp3", mtime=1, size=1, format="mp3",
-            artist="A", title="T", spotify_track_id="t1",
-            status=FileStatus.MATCHED,
-        ), now=datetime(2026, 5, 4, tzinfo=UTC))
+        await repo.upsert_local_file(
+            conn,
+            LocalFile(
+                path="/x.mp3",
+                mtime=1,
+                size=1,
+                format="mp3",
+                artist="A",
+                title="T",
+                spotify_track_id="t1",
+                status=FileStatus.MATCHED,
+            ),
+            now=datetime(2026, 5, 4, tzinfo=UTC),
+        )
 
     fake_client = AsyncMock()
     fake_client.me.return_value = {"id": "user1"}

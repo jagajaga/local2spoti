@@ -1,4 +1,3 @@
-from pathlib import Path
 from local2spoti.config import Settings, load_settings
 
 

@@ -1,6 +1,5 @@
 from datetime import UTC, datetime
 
-import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
 
@@ -14,20 +13,27 @@ async def _seed_some_state(db_path):
     async with connect(db_path) as conn:
         await init_schema(conn)
         now = datetime(2026, 5, 4, tzinfo=UTC)
-        await repo.upsert_local_file(conn, LocalFile(
-            path="/a.mp3", mtime=1, size=1, format="mp3",
-            artist="A", title="T", spotify_track_id="t1",
-            status=FileStatus.MATCHED,
-        ), now=now)
+        await repo.upsert_local_file(
+            conn,
+            LocalFile(
+                path="/a.mp3",
+                mtime=1,
+                size=1,
+                format="mp3",
+                artist="A",
+                title="T",
+                spotify_track_id="t1",
+                status=FileStatus.MATCHED,
+            ),
+            now=now,
+        )
         # Spotify auth + settings should survive reset
         await conn.execute(
             """INSERT INTO auth_token (key, access_token, refresh_token,
                expires_at, scope, user_id)
                VALUES ('spotify','at','rt','2099-01-01T00:00:00','x','user1')"""
         )
-        await conn.execute(
-            "INSERT INTO setting (key, value) VALUES ('threshold', 'strict')"
-        )
+        await conn.execute("INSERT INTO setting (key, value) VALUES ('threshold', 'strict')")
         await conn.commit()
 
 
@@ -38,9 +44,8 @@ async def test_reset_wipes_files_keeps_auth_and_settings(tmp_path, monkeypatch):
     await _seed_some_state(db)
 
     app = create_app()
-    async with LifespanManager(app):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            r = await c.post("/api/reset")
+    async with LifespanManager(app), AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.post("/api/reset")
     assert r.status_code == 200
     assert r.json()["ok"] is True
 
@@ -59,6 +64,7 @@ async def test_reset_wipes_files_keeps_auth_and_settings(tmp_path, monkeypatch):
 async def test_reset_blocked_while_scan_running(tmp_path, monkeypatch):
     """Reset must refuse if a scan is in progress to avoid data corruption."""
     import asyncio
+
     monkeypatch.setenv("HOME", str(tmp_path))
     db = tmp_path / ".local2spoti" / "state.db"
     db.parent.mkdir(parents=True)
@@ -69,6 +75,7 @@ async def test_reset_blocked_while_scan_running(tmp_path, monkeypatch):
         # Manually plant a fake "running" scan task
         async def _block():
             await asyncio.sleep(60)
+
         app.state.app_state.scan_task = asyncio.create_task(_block())
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
@@ -95,6 +102,7 @@ async def test_jobs_have_independent_slots(tmp_path, monkeypatch):
         # Plant a fake long-running deep_scan; ai_scan should NOT be blocked.
         async def _block():
             await asyncio.sleep(60)
+
         app.state.app_state.deep_scan_task = asyncio.create_task(_block())
         try:
             # any_job_running should still see something

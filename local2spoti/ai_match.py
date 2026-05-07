@@ -61,7 +61,12 @@ SUGGESTIONS_SCHEMA: dict = {
                     "reasoning": {"type": "string"},
                 },
                 "required": [
-                    "id", "artist", "title", "album", "confidence", "reasoning",
+                    "id",
+                    "artist",
+                    "title",
+                    "album",
+                    "confidence",
+                    "reasoning",
                 ],
                 "additionalProperties": False,
             },
@@ -124,9 +129,7 @@ class AIClient:
                     "cache_control": {"type": "ephemeral"},
                 }
             ],
-            output_config={
-                "format": {"type": "json_schema", "schema": SUGGESTIONS_SCHEMA}
-            },
+            output_config={"format": {"type": "json_schema", "schema": SUGGESTIONS_SCHEMA}},
             messages=[
                 {
                     "role": "user",
@@ -142,6 +145,7 @@ class AIClient:
         if not text:
             return []
         import orjson
+
         data = orjson.loads(text)
         return [
             Suggestion(
@@ -163,4 +167,5 @@ def _stable_json(obj: object) -> str:
     fixtures stable and avoids subtle non-determinism.
     """
     import orjson
+
     return orjson.dumps(obj, option=orjson.OPT_SORT_KEYS | orjson.OPT_INDENT_2).decode()

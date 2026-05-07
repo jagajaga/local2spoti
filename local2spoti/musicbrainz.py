@@ -30,10 +30,7 @@ _MB_BASE = "https://musicbrainz.org/ws/2"
 
 # MusicBrainz requires a User-Agent identifying the application.
 # Free; just be polite.
-_USER_AGENT = (
-    f"Local2Spoti/{__version__} "
-    "( https://github.com/local2spoti - local audio library to Spotify )"
-)
+_USER_AGENT = f"Local2Spoti/{__version__} ( https://github.com/local2spoti - local audio library to Spotify )"
 
 # 1 req/sec is the documented MB anonymous rate limit. capacity=2 lets
 # us absorb a tiny burst (e.g. a quick double-call on the same recording)
@@ -42,17 +39,19 @@ _MB_BUCKET = TokenBucket(rate=1.0, capacity=2.0)
 
 # Matches both `https://open.spotify.com/track/<id>` and
 # `spotify:track:<id>`. Spotify track IDs are 22-char base62.
-_SPOTIFY_TRACK_URL_RE = re.compile(
-    r"(?:https?://open\.spotify\.com/track/|spotify:track:)([A-Za-z0-9]{22})"
-)
+_SPOTIFY_TRACK_URL_RE = re.compile(r"(?:https?://open\.spotify\.com/track/|spotify:track:)([A-Za-z0-9]{22})")
 
 # Hosts that Odesli/SongLink can resolve to a Spotify URL. Order matters
 # only as a stable preference: Apple/iTunes is by far the most populated
 # on MB recordings, so we try it first when more than one is available.
 _ODESLI_RESOLVABLE_HOSTS = (
-    "music.apple.com", "itunes.apple.com",
-    "deezer.com", "www.deezer.com",
-    "tidal.com", "www.tidal.com", "listen.tidal.com",
+    "music.apple.com",
+    "itunes.apple.com",
+    "deezer.com",
+    "www.deezer.com",
+    "tidal.com",
+    "www.tidal.com",
+    "listen.tidal.com",
     "music.youtube.com",
     "soundcloud.com",
 )
@@ -61,10 +60,12 @@ _ODESLI_RESOLVABLE_HOSTS = (
 # The relationship-type IDs are stable but the human-readable `type`
 # strings are what you see in the JSON; we match either and fall back to
 # scanning every URL on the recording for a Spotify track pattern.
-_STREAMING_REL_TYPES = frozenset({
-    "free streaming",
-    "streaming",
-})
+_STREAMING_REL_TYPES = frozenset(
+    {
+        "free streaming",
+        "streaming",
+    }
+)
 
 
 class MusicBrainzClient:
@@ -86,7 +87,7 @@ class MusicBrainzClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def resolve_mbid(self, mbid: str) -> "MBResolution":
+    async def resolve_mbid(self, mbid: str) -> MBResolution:
         """Fetch the MB recording and extract anything useful for matching.
 
         Returns:
@@ -178,8 +179,13 @@ class MusicBrainzClient:
         return (await self.resolve_mbid(mbid)).spotify_track_id
 
     async def search_recording(
-        self, *, artist: str, title: str, album: str | None = None,
-        min_score: int = 80, limit: int = 5,
+        self,
+        *,
+        artist: str,
+        title: str,
+        album: str | None = None,
+        min_score: int = 80,
+        limit: int = 5,
     ) -> str | None:
         """Find an MBID for `artist` + `title` (+ optional `album`) via
         MB's text search. Returns the top result's MBID when its match
@@ -198,8 +204,7 @@ class MusicBrainzClient:
         # MB's Lucene-style query DSL. Quote each term to keep colons
         # and spaces from being parsed as operators. `recording:` is
         # the title field; `artist:` and `release:` are obvious.
-        parts = [f'artist:"{_lucene_escape(artist)}"',
-                 f'recording:"{_lucene_escape(title)}"']
+        parts = [f'artist:"{_lucene_escape(artist)}"', f'recording:"{_lucene_escape(title)}"']
         if album:
             parts.append(f'release:"{_lucene_escape(album)}"')
         query = " AND ".join(parts)
@@ -238,7 +243,7 @@ def _lucene_escape(s: str) -> str:
     # Lucene specials. Double-quote isn't in the list because we wrap
     # the field value in our own double quotes — but we still strip
     # any embedded quotes so they don't break out.
-    specials = r'+-&|!(){}[]^~*?:\/'
+    specials = r"+-&|!(){}[]^~*?:\/"
     out = []
     for ch in s:
         if ch == '"':
