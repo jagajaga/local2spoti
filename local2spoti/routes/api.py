@@ -17,8 +17,38 @@ from ..matcher import Threshold
 from ..models import FileStatus
 from ..pipeline import _stage_match, run_scan
 from ..playlist import push_matched_to_spotify
-from ..recovery import ai_scan_unmatched, count_unmatched, deep_scan_unmatched
+from ..recovery import ai_scan_unmatched, count_unmatched, deep_scan_unmatched, match_via_mb_text
 from ..spotify_client import SpotifyClient
+
+
+def _make_token_provider(state):
+    """Returns an async callable the SpotifyClient invokes on 401.
+
+    Calling it actively refreshes the token via the OAuth refresh
+    endpoint (instead of just re-reading the DB), so a 401 race against
+    the periodic refresh_loop still recovers cleanly. Without this, a
+    file that 401s the moment its access token crosses the 1-hour
+    boundary would error out before refresh_loop's next 60-second tick
+    has run.
+    """
+    from ..token_refresh import refresh_if_expiring
+
+    async def _provide() -> str:
+        try:
+            await refresh_if_expiring(
+                conn=state.db_conn,
+                client_id=state.settings.spotify_client_id,
+                threshold_seconds=86400,  # always refresh on demand
+            )
+        except Exception:
+            pass
+        cur = await state.db_conn.execute(
+            "SELECT access_token FROM auth_token WHERE key='spotify'"
+        )
+        row = await cur.fetchone()
+        return row[0] if row else ""
+    return _provide
+
 
 router = APIRouter(prefix="/api")
 auth_router = APIRouter()
@@ -227,7 +257,7 @@ async def scan_start(request: Request) -> JSONResponse:
     access_token = row[0]
 
     threshold = Threshold(state.settings.threshold)
-    client = SpotifyClient(access_token=access_token, bucket=state.spotify_bucket)
+    client = SpotifyClient(access_token=access_token, bucket=state.spotify_bucket, token_provider=_make_token_provider(state))
     # Only clear the cancel event if no other long-running job is using it.
     if not state.any_job_running():
         state.cancel_event.clear()
@@ -401,6 +431,40 @@ async def retry_errors(request: Request) -> JSONResponse:
     )
 
 
+@router.post("/match_via_mb_text")
+async def match_via_mb_text_endpoint(request: Request, limit: int = 100000) -> JSONResponse:
+    """Alternative to /api/match: uses MusicBrainz text search on the
+    file's existing artist/title/album tags to land a Spotify track ID
+    via MB's URL relationships (or ISRC, or Odesli) — no Spotify
+    /search calls.
+
+    Use this when Spotify's /search is rate-limited (403'd) and you
+    want to keep matching. MB has its own 1 req/sec bucket, separate
+    from Spotify's, so this stage progresses regardless of Spotify's
+    backoff state. Coverage is lower than Spotify's fuzzy /search
+    (MB text-search misses on heavily-decorated titles), so this is
+    additive — files MB can't find stay in 'scanned'.
+
+    Counts as the deep_scan job slot (it runs alongside the Spotify
+    bucket, but doesn't compete with /api/match's bucket use).
+    """
+    state = request.app.state.app_state
+    if state.deep_scan_task and not state.deep_scan_task.done():
+        return JSONResponse(
+            {"error": "Deep scan / fingerprint / mb-text match already running — stop it first"},
+            status_code=409,
+        )
+    if not state.any_job_running():
+        state.cancel_event.clear()
+    state.deep_scan_task = asyncio.create_task(
+        match_via_mb_text(state, limit=limit),
+    )
+    return JSONResponse({
+        "ok": True,
+        "message": "MB-text match started — bypasses Spotify /search via MB recording search",
+    })
+
+
 @router.post("/match_via_fingerprint")
 async def match_via_fingerprint(request: Request, limit: int = 100000) -> JSONResponse:
     """Alternative to /api/match: uses AcoustID fingerprinting + MusicBrainz
@@ -463,7 +527,7 @@ async def match_only(request: Request) -> JSONResponse:
         return JSONResponse({"error": "Spotify not connected"}, status_code=400)
 
     threshold = Threshold(state.settings.threshold)
-    client = SpotifyClient(access_token=row[0], bucket=state.spotify_bucket)
+    client = SpotifyClient(access_token=row[0], bucket=state.spotify_bucket, token_provider=_make_token_provider(state))
     if not state.any_job_running():
         state.cancel_event.clear()
 
@@ -513,7 +577,7 @@ async def push(request: Request) -> JSONResponse:
     row = await cur.fetchone()
     if not row:
         return JSONResponse({"error": "Spotify not connected"}, status_code=400)
-    client = SpotifyClient(access_token=row[0], bucket=state.spotify_bucket)
+    client = SpotifyClient(access_token=row[0], bucket=state.spotify_bucket, token_provider=_make_token_provider(state))
     try:
         result = await push_matched_to_spotify(conn=state.db_conn, client=client)
     finally:
@@ -643,7 +707,7 @@ async def auth_callback(request: Request) -> RedirectResponse:
     )
     expires_at = datetime.now(UTC) + timedelta(seconds=tokens["expires_in"] - 60)
     from ..spotify_client import SpotifyClient
-    client = SpotifyClient(access_token=tokens["access_token"], bucket=state.spotify_bucket)
+    client = SpotifyClient(access_token=tokens["access_token"], bucket=state.spotify_bucket, token_provider=_make_token_provider(state))
     try:
         me = await client.me()
     finally:

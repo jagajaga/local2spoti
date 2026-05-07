@@ -27,6 +27,18 @@ async def dashboard(request: Request) -> HTMLResponse:
         "SELECT MAX(finished_at) FROM scan_run WHERE status='completed'"
     )
     (last_scan_at,) = await cur.fetchone()
+    # Per-method match breakdown so the user can see at a glance how
+    # many tracks landed via fingerprint paths (musicbrainz / odesli /
+    # isrc) vs the regular Spotify search match.
+    cur = await state.db_conn.execute(
+        "SELECT match_method, COUNT(*) FROM local_file "
+        "WHERE spotify_track_id IS NOT NULL GROUP BY match_method"
+    )
+    by_method = {row[0] or "search": row[1] for row in await cur.fetchall()}
+    cur = await state.db_conn.execute(
+        "SELECT COUNT(*) FROM local_file WHERE isrc IS NOT NULL"
+    )
+    (isrc_tagged,) = await cur.fetchone()
     user_row = await (await state.db_conn.execute(
         "SELECT user_id FROM auth_token WHERE key='spotify'"
     )).fetchone()
@@ -39,6 +51,8 @@ async def dashboard(request: Request) -> HTMLResponse:
             "last_scan_at": last_scan_at,
             "spotify_user": user_row[0] if user_row else None,
             "counts": {k.value: v for k, v in counts.items()},
+            "by_method": by_method,
+            "isrc_tagged": isrc_tagged,
             "threshold": state.settings.threshold,
             "has_acoustid_key": bool(state.settings.acoustid_api_key),
         },

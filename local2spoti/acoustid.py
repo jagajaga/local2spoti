@@ -94,17 +94,33 @@ class AcoustidClient:
         (invalid key, rate limit, etc.) — distinct from a successful "no
         match" response. The HTTP status is 200 in both cases; the
         difference lives in the JSON `status` field.
+
+        Network-level failures (TLS connect timeout, DNS hiccup, brief
+        disconnect) are treated as soft misses (return None) — same
+        policy as MB/Odesli. Letting httpx exceptions propagate here used
+        to kill the entire deep_scan loop on the first transient blip,
+        because nothing upstream caught them.
         """
-        r = await self._http.get(
-            "https://api.acoustid.org/v2/lookup",
-            params={
-                "client": self._api_key,
-                "duration": duration,
-                "fingerprint": fingerprint,
-                "meta": "recordings",
-                "format": "json",
-            },
-        )
+        try:
+            r = await self._http.get(
+                "https://api.acoustid.org/v2/lookup",
+                params={
+                    "client": self._api_key,
+                    "duration": duration,
+                    "fingerprint": fingerprint,
+                    "meta": "recordings",
+                    "format": "json",
+                },
+            )
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError):
+            return None
+        # 5xx: AcoustID server hiccup. Common during their daily restart
+        # window or under heavy load. Soft-fail and let the loop move on
+        # — these are recoverable, and one hiccup must not abort an
+        # 11K-file run. Only 4xx (likely an auth/quota problem we can't
+        # resolve mid-run) becomes a hard AcoustidError.
+        if 500 <= r.status_code < 600:
+            return None
         if r.status_code != 200:
             raise AcoustidError(
                 code=-1, message=f"HTTP {r.status_code} {r.text[:200]}",

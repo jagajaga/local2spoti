@@ -96,29 +96,40 @@ class MusicBrainzClient:
             YouTube Music/SoundCloud) that Odesli can convert to Spotify
             — populated only when no Spotify URL was found, so it's a
             true fallback signal.
+          - `isrc`: the first ISRC code listed on the recording, when
+            present. ISRC is a global recording id Spotify indexes on,
+            so a downstream `q=isrc:XXX` search resolves the exact track
+            in one /search call (much higher coverage than url-rels:
+            most commercial recordings have an ISRC, but only a fraction
+            have Spotify URLs filed with MB).
 
-        Both fields can be None when MB has no usable URL relationships
-        or when the request fails (caller treats failures as soft misses
-        and falls back further).
+        Any field can be None when MB has no usable data or when the
+        request fails (caller treats failures as soft misses and falls
+        back further).
         """
         await _MB_BUCKET.acquire()
         try:
             r = await self._http.get(
                 f"/recording/{mbid}",
-                params={"inc": "url-rels", "fmt": "json"},
+                params={"inc": "url-rels+isrcs", "fmt": "json"},
             )
         except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError):
-            return MBResolution(None, None)
+            return MBResolution(None, None, None)
 
         if r.status_code != 200:
-            return MBResolution(None, None)
+            return MBResolution(None, None, None)
 
         try:
             data = r.json()
         except ValueError:
-            return MBResolution(None, None)
+            return MBResolution(None, None, None)
 
         relations = data.get("relations") or []
+        isrcs = data.get("isrcs") or []
+        # Pick the first ISRC if any. They're already alphanumeric in
+        # MB's response; we still defensively normalize (strip dashes /
+        # case) downstream where _parse_isrc lives.
+        first_isrc = isrcs[0] if isrcs else None
         spotify_id: str | None = None
         # Prefer URLs from streaming relationships, but if none of those
         # match scan all URL relationships — we've seen Spotify links
@@ -143,8 +154,10 @@ class MusicBrainzClient:
 
         if spotify_id is not None:
             # No need to look for Odesli-resolvable URLs — we've already
-            # got the answer.
-            return MBResolution(spotify_id, None)
+            # got the answer. Still pass back the ISRC so the next
+            # match-stage run can short-circuit any other file with the
+            # same ISRC via Spotify's own ISRC index.
+            return MBResolution(spotify_id, None, first_isrc)
 
         # No Spotify URL on this recording. Look for any other streaming
         # platform URL Odesli can convert. Iterate hosts in preference
@@ -153,8 +166,8 @@ class MusicBrainzClient:
             for rel in relations:
                 url = (rel.get("url") or {}).get("resource", "")
                 if host in url:
-                    return MBResolution(None, url)
-        return MBResolution(None, None)
+                    return MBResolution(None, url, first_isrc)
+        return MBResolution(None, None, first_isrc)
 
     async def spotify_track_id_for_mbid(self, mbid: str) -> str | None:
         """Back-compat shim: returns just the Spotify track ID, if any.
@@ -164,8 +177,80 @@ class MusicBrainzClient:
         """
         return (await self.resolve_mbid(mbid)).spotify_track_id
 
+    async def search_recording(
+        self, *, artist: str, title: str, album: str | None = None,
+        min_score: int = 80, limit: int = 5,
+    ) -> str | None:
+        """Find an MBID for `artist` + `title` (+ optional `album`) via
+        MB's text search. Returns the top result's MBID when its match
+        score is at least `min_score`, else None.
+
+        Used as an artist+title → MBID bridge so a downstream
+        `resolve_mbid` call can convert tag metadata into a Spotify
+        track ID without ever hitting Spotify /search — MB's rate
+        limits are much friendlier (1 req/sec, no 403 escalation).
+
+        Coverage is lower than Spotify's fuzzy search: MB's text
+        search misses on heavily-decorated titles ("(remastered)",
+        "feat. X"), spelling variations, and any track not in MB at
+        all. Treat this as a /search fallback, not a replacement.
+        """
+        # MB's Lucene-style query DSL. Quote each term to keep colons
+        # and spaces from being parsed as operators. `recording:` is
+        # the title field; `artist:` and `release:` are obvious.
+        parts = [f'artist:"{_lucene_escape(artist)}"',
+                 f'recording:"{_lucene_escape(title)}"']
+        if album:
+            parts.append(f'release:"{_lucene_escape(album)}"')
+        query = " AND ".join(parts)
+        await _MB_BUCKET.acquire()
+        try:
+            r = await self._http.get(
+                "/recording",
+                params={"query": query, "fmt": "json", "limit": limit},
+            )
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError):
+            return None
+        if r.status_code != 200:
+            return None
+        try:
+            data = r.json()
+        except ValueError:
+            return None
+        recs = data.get("recordings") or []
+        if not recs:
+            return None
+        top = recs[0]
+        score = int(top.get("score") or 0)
+        if score < min_score:
+            return None
+        return top.get("id")
+
+
+def _lucene_escape(s: str) -> str:
+    """Escape a string for MB's Lucene-based query DSL.
+
+    MB rejects (or worse, silently mis-parses) queries containing
+    unescaped Lucene operators. Tag values in the wild routinely
+    include colons, slashes, parens, etc., so we backslash-escape
+    them before quoting.
+    """
+    # Lucene specials. Double-quote isn't in the list because we wrap
+    # the field value in our own double quotes — but we still strip
+    # any embedded quotes so they don't break out.
+    specials = r'+-&|!(){}[]^~*?:\/'
+    out = []
+    for ch in s:
+        if ch == '"':
+            continue  # drop embedded quotes
+        if ch in specials:
+            out.append("\\")
+        out.append(ch)
+    return "".join(out)
+
 
 @dataclass(slots=True, frozen=True)
 class MBResolution:
     spotify_track_id: str | None
     odesli_url: str | None
+    isrc: str | None = None

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import httpx
 import orjson
@@ -48,14 +48,22 @@ class SpotifyClient:
         access_token: str,
         bucket: TokenBucket,
         timeout: float = 30.0,
+        token_provider: Callable[[], Awaitable[str]] | None = None,
     ) -> None:
+        """`token_provider`, when set, is awaited on 401 to fetch the
+        latest token from the persistent store. Lets the client survive
+        a long-running job that crosses a token-refresh boundary — the
+        background refresh_loop updates the DB row, and we re-read it
+        on the first 401 instead of failing every subsequent file."""
         self._token = access_token
         self._bucket = bucket
+        self._token_provider = token_provider
         self._http = httpx.AsyncClient(
             base_url=_BASE,
             timeout=timeout,
             headers={"Authorization": f"Bearer {access_token}"},
         )
+        self._refresh_lock = asyncio.Lock()
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -63,6 +71,22 @@ class SpotifyClient:
     def set_access_token(self, token: str) -> None:
         self._token = token
         self._http.headers["Authorization"] = f"Bearer {token}"
+
+    async def _try_refresh_token(self) -> None:
+        """Ask the token_provider for the latest access token and adopt
+        it. Locked so a burst of concurrent 401s collapses into a single
+        provider call — but every individual 401'd request still gets
+        its own retry (the caller doesn't gate on whether *this* call
+        was the one that performed the refresh; see _request)."""
+        if self._token_provider is None:
+            return
+        async with self._refresh_lock:
+            try:
+                fresh = await self._token_provider()
+            except Exception:
+                return
+            if fresh and fresh != self._token:
+                self.set_access_token(fresh)
 
     async def _get(self, path: str, **params: Any) -> dict[str, Any]:
         return await self._request("GET", path, params=params or None)
@@ -79,6 +103,7 @@ class SpotifyClient:
         json: Any | None = None,
     ) -> dict[str, Any]:
         attempt = 0
+        auth_retried = False
         while True:
             await self._bucket.acquire()
             content = orjson.dumps(json) if json is not None else None
@@ -91,17 +116,32 @@ class SpotifyClient:
                 )
             except (
                 httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError,
+                httpx.RemoteProtocolError,
             ):
                 # Network blip — DNS hiccup, captive portal, brief WiFi
-                # drop, Spotify took too long to answer. Definitionally
-                # transient. Pause and retry forever; the user's only
-                # escape hatch is the Stop button (cancel_event in the
-                # pipeline). Same 60s default the 429 path uses when
-                # there's no Retry-After header — keeps a single
-                # consistent "retry-after-this-long" knob. Without this
-                # an httpx.ConnectError would propagate to process_artist
-                # and the group's files would get marked as error.
+                # drop, Spotify took too long to answer, server closed
+                # the connection mid-response. Definitionally transient.
+                # Pause and retry forever; the user's only escape hatch
+                # is the Stop button (cancel_event in the pipeline).
+                # Same 60s default the 429 path uses when there's no
+                # Retry-After header — keeps a single consistent
+                # "retry-after-this-long" knob. Without this an
+                # httpx.ConnectError / RemoteProtocolError would
+                # propagate to process_artist and the group's files
+                # would get marked as error.
                 self._bucket.pause_for(_DEFAULT_RATE_LIMIT_PAUSE_SECONDS)
+                continue
+            # 401 mid-job almost always means the access token expired
+            # and the token_provider can fetch / force-refresh a new one.
+            # Retry exactly once per request — the per-request flag
+            # prevents an infinite loop on a genuinely bad token, and
+            # lets every concurrent worker get its own retry shot
+            # (a shared "did we refresh?" check would race: worker A
+            # refreshes, worker B sees the new token already in place
+            # and would otherwise wrongly conclude refresh failed).
+            if r.status_code == 401 and not auth_retried:
+                auth_retried = True
+                await self._try_refresh_token()
                 continue
             # Treat both 429 and "Spotify is unavailable in this country"
             # 403s as soft rate-limit signals. Empirically, Spotify
