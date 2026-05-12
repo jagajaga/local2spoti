@@ -681,3 +681,151 @@ async def count_unmatched(conn) -> int:
     cur = await conn.execute("SELECT COUNT(*) FROM local_file WHERE status='unmatched'")
     (n,) = await cur.fetchone()
     return n
+
+
+async def auto_cycle(
+    state: AppState,
+    *,
+    max_iterations: int = 10,
+    ai_batch_size: int = 20,
+) -> dict[str, int]:
+    """Drive match → AI(review) → AI(unmatched) → match … in a loop.
+
+    Stops when an iteration moves zero files (everything that could be
+    rescued has been) or after `max_iterations` (safety cap so a bug or
+    AI quota-out can't loop forever). Each iteration emits a stage=
+    'auto_cycle' progress event so the dashboard can show the loop.
+
+    Designed for the common power-user flow: after fingerprint + MB-text
+    + manual fixes, press one button to chew through the long tail of
+    review/unmatched files, with Claude re-identifying what Spotify
+    couldn't.
+    """
+    from datetime import UTC, datetime
+
+    from .matcher import Threshold
+    from .pipeline import _stage_match
+    from .spotify_client import SpotifyClient
+    from .token_refresh import refresh_if_expiring
+
+    # Build an authenticated Spotify client up front. We pass it into
+    # _stage_match each iteration; if the token's missing we abort
+    # early rather than burn through AI scans the user can't push.
+    cur = await state.db_conn.execute("SELECT access_token FROM auth_token WHERE key='spotify'")
+    row = await cur.fetchone()
+    if not row:
+        await state.bus.publish(
+            ProgressEvent(
+                stage="auto_cycle",
+                processed=0,
+                total=0,
+                message="Spotify not connected — connect first, then retry auto-cycle",
+            )
+        )
+        return {"iterations": 0, "matched_delta": 0}
+
+    async def _provide() -> str:
+        try:
+            await refresh_if_expiring(
+                conn=state.db_conn,
+                client_id=state.settings.spotify_client_id,
+                threshold_seconds=86400,
+            )
+        except Exception:
+            pass
+        cur2 = await state.db_conn.execute("SELECT access_token FROM auth_token WHERE key='spotify'")
+        r2 = await cur2.fetchone()
+        return r2[0] if r2 else ""
+
+    client = SpotifyClient(
+        access_token=row[0],
+        bucket=state.spotify_bucket,
+        token_provider=_provide,
+    )
+
+    async def _matched_count() -> int:
+        c = await state.db_conn.execute("SELECT COUNT(*) FROM local_file WHERE status='matched'")
+        (n,) = await c.fetchone()
+        return n
+
+    threshold = Threshold(state.settings.threshold)
+    start_matched = await _matched_count()
+    total_iters = 0
+    try:
+        for i in range(1, max_iterations + 1):
+            if state.cancel_event.is_set():
+                await state.bus.publish(
+                    ProgressEvent(
+                        stage="auto_cycle",
+                        processed=total_iters,
+                        total=max_iterations,
+                        message=f"cancelled after iteration {total_iters}",
+                    )
+                )
+                break
+            before = await _matched_count()
+            await state.bus.publish(
+                ProgressEvent(
+                    stage="auto_cycle",
+                    processed=i - 1,
+                    total=max_iterations,
+                    message=f"iter {i}/{max_iterations}: running Spotify match",
+                )
+            )
+            await _stage_match(
+                state.db_conn,
+                client,
+                threshold,
+                bus=state.bus,
+                now=datetime.now(UTC),
+            )
+            if state.cancel_event.is_set():
+                break
+            await state.bus.publish(
+                ProgressEvent(
+                    stage="auto_cycle",
+                    processed=i - 1,
+                    total=max_iterations,
+                    message=f"iter {i}/{max_iterations}: Claude AI on review queue",
+                )
+            )
+            await ai_scan_unmatched(state, batch_size=ai_batch_size, status="review")
+            if state.cancel_event.is_set():
+                break
+            await state.bus.publish(
+                ProgressEvent(
+                    stage="auto_cycle",
+                    processed=i - 1,
+                    total=max_iterations,
+                    message=f"iter {i}/{max_iterations}: Claude AI on unmatched",
+                )
+            )
+            await ai_scan_unmatched(state, batch_size=ai_batch_size, status="unmatched")
+            after = await _matched_count()
+            delta = after - before
+            total_iters = i
+            await state.bus.publish(
+                ProgressEvent(
+                    stage="auto_cycle",
+                    processed=i,
+                    total=max_iterations,
+                    message=f"iter {i}/{max_iterations} done — +{delta} matched this cycle",
+                )
+            )
+            if delta == 0:
+                # Stable: nothing the loop can rescue still moves. Done.
+                await state.bus.publish(
+                    ProgressEvent(
+                        stage="auto_cycle",
+                        processed=i,
+                        total=max_iterations,
+                        message=f"converged — no new matches in iter {i}, stopping",
+                    )
+                )
+                break
+    finally:
+        await client.aclose()
+        await state.bus.flush()
+
+    end_matched = await _matched_count()
+    return {"iterations": total_iters, "matched_delta": end_matched - start_matched}

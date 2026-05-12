@@ -30,7 +30,15 @@ class AppState:
     scan_task: asyncio.Task | None = None
     deep_scan_task: asyncio.Task | None = None
     ai_scan_task: asyncio.Task | None = None
+    # Auto-cycle: drives the match → AI(review) → AI(unmatched) loop in a
+    # single button press. Lives in its own slot because it *delegates*
+    # work to the other slots and would otherwise block itself on the
+    # same-slot guard.
+    auto_cycle_task: asyncio.Task | None = None
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
 
     def any_job_running(self) -> bool:
-        return any(t is not None and not t.done() for t in (self.scan_task, self.deep_scan_task, self.ai_scan_task))
+        return any(
+            t is not None and not t.done()
+            for t in (self.scan_task, self.deep_scan_task, self.ai_scan_task, self.auto_cycle_task)
+        )

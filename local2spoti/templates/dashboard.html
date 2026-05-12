@@ -236,6 +236,18 @@
         </button>
         <span class="text-xs text-zinc-400">Create playlists from every matched track (chunks of 9000).</span>
       </div>
+      <div class="flex items-center gap-3">
+        <button type="button"
+                hx-post="/api/auto_cycle"
+                hx-target="#scan-status"
+                hx-swap="innerHTML"
+                class="px-4 py-2 bg-pink-700 hover:bg-pink-600 rounded w-64 text-left disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Loops Match → Claude AI on review → Claude AI on unmatched, until no new matches in a cycle. Up to 10 iterations. Press Stop to interrupt."
+                {% if not spotify_user %}disabled{% endif %}>
+          6 · Auto-cycle (match + AI)
+        </button>
+        <span class="text-xs text-zinc-400">Loops <strong>4</strong> + Claude on review/unmatched until stable. One button for the long tail.</span>
+      </div>
     </div>
 
     <!-- Utility row: stop / reset / status. Lives below the workflow
@@ -271,6 +283,7 @@
         ("deep_scan", "AcoustID deep scan", "bg-amber-600"),
         ("mb_text", "MB text-search match", "bg-fuchsia-600"),
         ("ai_scan", "AI matching (Claude)", "bg-purple-600"),
+        ("auto_cycle", "Auto-cycle (match + AI loop)", "bg-pink-600"),
       ] %}
       <div class="text-xs">
         <div class="flex justify-between text-zinc-400 mb-0.5">

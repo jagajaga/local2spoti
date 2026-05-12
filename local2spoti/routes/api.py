@@ -15,7 +15,13 @@ from ..matcher import Threshold
 from ..models import FileStatus
 from ..pipeline import _stage_match, run_scan
 from ..playlist import push_matched_to_spotify
-from ..recovery import ai_scan_unmatched, count_unmatched, deep_scan_unmatched, match_via_mb_text
+from ..recovery import (
+    ai_scan_unmatched,
+    auto_cycle,
+    count_unmatched,
+    deep_scan_unmatched,
+    match_via_mb_text,
+)
 from ..spotify_client import SpotifyClient
 
 
@@ -561,9 +567,39 @@ async def match_only(request: Request) -> JSONResponse:
     )
 
 
+@router.post("/auto_cycle")
+async def auto_cycle_endpoint(request: Request) -> JSONResponse:
+    """Run match → AI(review) → AI(unmatched) on a loop until nothing
+    moves. The "button 6" — one click chews through the long tail of
+    review/unmatched files that need both Spotify search and Claude
+    rescue, instead of you alternating manually.
+
+    Stops when an iteration produces zero new matches, hits Stop, or
+    hits the safety cap of 10 iterations.
+    """
+    state = request.app.state.app_state
+    if state.auto_cycle_task and not state.auto_cycle_task.done():
+        return JSONResponse(
+            {"error": "Auto-cycle already running — stop it first"},
+            status_code=409,
+        )
+    if state.scan_task and not state.scan_task.done():
+        return JSONResponse(
+            {"error": "Match/scan already running — stop it first (auto-cycle drives the same slot)"},
+            status_code=409,
+        )
+    cur = await state.db_conn.execute("SELECT access_token FROM auth_token WHERE key='spotify'")
+    if not await cur.fetchone():
+        return JSONResponse({"error": "Spotify not connected"}, status_code=400)
+    if not state.any_job_running():
+        state.cancel_event.clear()
+    state.auto_cycle_task = asyncio.create_task(auto_cycle(state))
+    return JSONResponse({"ok": True, "message": "Auto-cycle started — match + AI rescue, looping until stable"})
+
+
 @router.post("/scan/cancel")
 async def scan_cancel(request: Request) -> JSONResponse:
-    """Stop every running long-running job (scan / deep_scan / ai_scan)."""
+    """Stop every running long-running job (scan / deep_scan / ai_scan / auto_cycle)."""
     state = request.app.state.app_state
     cancelled: list[str] = []
     state.cancel_event.set()
@@ -571,6 +607,7 @@ async def scan_cancel(request: Request) -> JSONResponse:
         ("scan", state.scan_task),
         ("deep_scan", state.deep_scan_task),
         ("ai_scan", state.ai_scan_task),
+        ("auto_cycle", state.auto_cycle_task),
     ):
         if task is not None and not task.done():
             task.cancel()
