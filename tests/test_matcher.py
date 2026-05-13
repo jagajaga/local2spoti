@@ -84,6 +84,85 @@ def test_decide_loose():
     )
 
 
+def test_decide_balanced_album_match_alone_is_not_auto():
+    """Regression: BALANCED used to auto-promote when album_match was
+    True even with the duration off (or absent). Now duration must be
+    within 5s — album_match alone is no longer a sufficient safety net.
+    """
+    assert (
+        decide(
+            artist_sim=0.95,
+            title_sim=0.95,
+            album_match=True,
+            duration_delta_ms=15000,  # 15s off — outside the 5s window
+            threshold=Threshold.BALANCED,
+        )
+        == "review"
+    )
+    # And with no duration info at all, also review (was previously auto
+    # via the album_match path).
+    assert (
+        decide(
+            artist_sim=0.95,
+            title_sim=0.95,
+            album_match=True,
+            duration_delta_ms=None,
+            threshold=Threshold.BALANCED,
+        )
+        == "review"
+    )
+
+
+def test_score_flags_variant_mismatch():
+    """Spotify's title says 'Live'; local says 'Mony Mony'. The
+    candidate should be flagged variant_mismatch and have its
+    confidence penalized so the clean studio cut outranks it.
+    """
+    from local2spoti.matcher import score_candidate
+
+    studio = score_candidate(
+        local_artist="Billy Idol",
+        local_title="Mony Mony",
+        local_album=None,
+        local_duration_ms=200000,
+        spotify_artist="Billy Idol",
+        spotify_title="Mony Mony",
+        spotify_album=None,
+        spotify_duration_ms=200000,
+    )
+    live = score_candidate(
+        local_artist="Billy Idol",
+        local_title="Mony Mony",
+        local_album=None,
+        local_duration_ms=200000,
+        spotify_artist="Billy Idol",
+        spotify_title="Mony Mony - Live at MSG",
+        spotify_album=None,
+        spotify_duration_ms=200000,
+    )
+    assert studio.variant_mismatch is False
+    assert live.variant_mismatch is True
+    # Studio confidence must rank above live, even though they share
+    # the same artist/title/duration.
+    assert studio.confidence > live.confidence
+
+
+def test_decide_refuses_auto_for_variant_mismatch():
+    """Even with perfect artist/title sim and matching duration, a
+    live/remix/remaster candidate must go to review (not auto)."""
+    assert (
+        decide(
+            artist_sim=1.0,
+            title_sim=0.92,  # 'Mony Mony - Live at MSG' vs 'Mony Mony'
+            album_match=False,
+            duration_delta_ms=500,
+            threshold=Threshold.BALANCED,
+            variant_mismatch=True,
+        )
+        == "review"
+    )
+
+
 def test_decide_unmatched_when_low():
     assert (
         decide(

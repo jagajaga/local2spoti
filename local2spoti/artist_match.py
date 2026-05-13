@@ -52,6 +52,7 @@ def _track_to_candidate(
         duration_delta_ms=s.duration_delta_ms,
         confidence=s.confidence,
         rank=rank,
+        variant_mismatch=s.variant_mismatch,
     )
 
 
@@ -142,6 +143,7 @@ async def match_artist_group(
             album_match=(top.spotify_album is not None and f.album is not None),
             duration_delta_ms=top.duration_delta_ms,
             threshold=threshold,
+            variant_mismatch=top.variant_mismatch,
         )
         results.append(FileMatchResult(f, decision, top, top5))
     return results
@@ -174,6 +176,7 @@ async def match_per_track(
             album_match=(top.spotify_album is not None and f.album is not None),
             duration_delta_ms=top.duration_delta_ms,
             threshold=threshold,
+            variant_mismatch=top.variant_mismatch,
         )
         out.append(FileMatchResult(f, decision, top, top5))
     return out

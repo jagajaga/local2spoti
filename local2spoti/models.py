@@ -61,6 +61,10 @@ class MatchCandidate:
     spotify_album: str | None = None
     spotify_duration_ms: int | None = None
     duration_delta_ms: int | None = None
+    # True when the Spotify title contains a live/remix/remaster marker
+    # the local title doesn't. The matcher uses this to keep variant
+    # versions out of the auto-match path even when string sim is high.
+    variant_mismatch: bool = False
 
     def __post_init__(self) -> None:
         self.sort_index = -self.confidence

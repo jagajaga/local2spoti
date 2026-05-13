@@ -24,7 +24,11 @@ def fake_client():
                     {
                         "id": "t1",
                         "name": "Around the World",
-                        "duration_ms": 423000,
+                        # Match the 1-second silent MP3 the e2e test
+                        # generates. After the BALANCED rule dropped
+                        # the album-only safety net, the duration must
+                        # be within 5s of Spotify's for auto-match.
+                        "duration_ms": 1000,
                         "artists": [{"name": "Daft Punk"}],
                     },
                 ]
