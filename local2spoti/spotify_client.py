@@ -201,29 +201,51 @@ class SpotifyClient:
     async def search_artist(self, name: str) -> dict[str, Any] | None:
         """Resolve an artist name to a Spotify artist record.
 
-        Fetches the top 5 results and picks the one whose name actually
-        matches what we asked for. Spotify's default `limit=1` is a trap:
-        for classical / non-English / less-popular artists their
-        relevance ranking often returns a *more* popular adjacent artist
-        (Mozart → Beethoven, DJ Shadow → Massive Attack, etc.) because
-        those artists appear on compilations that mention the searched
-        name. We refuse anything below 0.75 fuzzy similarity — better a
-        cache miss than a 47K-track wrong catalog cached for 30 days.
+        Spotify's `limit=1` is a trap on two fronts:
+          1. Top hit can be a more-popular adjacent artist (Mozart →
+             Beethoven, DJ Shadow → Massive Attack) because they appear
+             on compilations that mention the searched name.
+          2. WRatio scores "Family" vs "Family of the Year" at 0.9
+             (substring containment), so even similarity-filtering with
+             WRatio still locks the wrong artist in for short names.
+
+        Two-tier picker over the top 5:
+          - If any candidate's name equals the query (case-insensitive,
+            after stripping punctuation), pick that. This is the
+            common case for almost every well-tagged file.
+          - Otherwise score with rapidfuzz.fuzz.ratio (pure Levenshtein,
+            no substring reward) and require ≥ 0.85. Stricter than
+            WRatio's 0.75 because we know the query is a *full* artist
+            name, not a fragment.
         """
-        from .normalize import similarity
+        import re
+
+        from rapidfuzz import fuzz
+
+        def _normalize(s: str) -> str:
+            return re.sub(r"[^\w\s]", "", s).strip().lower()
 
         data = await self._get("/search", q=name, type="artist", limit=5)
         items = data.get("artists", {}).get("items", [])
         if not items:
             return None
-        best: dict[str, Any] | None = None
-        best_sim = 0.0
+
+        target = _normalize(name)
+        # Tier 1: exact (case/punctuation-insensitive) hit wins
+        # regardless of rank.
         for it in items:
-            sim = similarity(name, it.get("name", ""))
-            if sim > best_sim:
-                best_sim = sim
+            if _normalize(it.get("name", "")) == target:
+                return it
+
+        # Tier 2: best Levenshtein ratio (no substring reward) above 0.85.
+        best: dict[str, Any] | None = None
+        best_score = 0.0
+        for it in items:
+            score = fuzz.ratio(target, _normalize(it.get("name", ""))) / 100.0
+            if score > best_score:
+                best_score = score
                 best = it
-        if best_sim < 0.75:
+        if best_score < 0.85:
             return None
         return best
 

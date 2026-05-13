@@ -88,8 +88,8 @@ async def test_search_artist(client):
 async def test_search_artist_rejects_low_similarity_top_result(client):
     """Regression: Spotify's /search?type=artist sometimes returns a more
     popular adjacent artist as the top result (Mozart → Beethoven,
-    DJ Shadow → Massive Attack). Refuse anything below 0.75 fuzzy sim
-    so we don't cache a 47K-track wrong catalog for 30 days.
+    DJ Shadow → Massive Attack). Refuse when no candidate matches the
+    query name to avoid caching a wrong 47K-track catalog for 30 days.
     """
     respx.get("https://api.spotify.com/v1/search").mock(
         return_value=httpx.Response(
@@ -115,7 +115,7 @@ async def test_search_artist_rejects_low_similarity_top_result(client):
 @respx.mock
 async def test_search_artist_picks_best_among_top5(client):
     """Top result isn't always the right one — pick whichever of the
-    top-5 actually matches the query name (rapidfuzz ≥ 0.75)."""
+    top-5 actually matches the query name."""
     respx.get("https://api.spotify.com/v1/search").mock(
         return_value=httpx.Response(
             200,
@@ -135,6 +135,54 @@ async def test_search_artist_picks_best_among_top5(client):
     artist = await client.search_artist("DJ Shadow")
     assert artist is not None
     assert artist["id"] == "right"
+
+
+@respx.mock
+async def test_search_artist_rejects_substring_containment(client):
+    """Regression: short artist names are catastrophic with substring-
+    aware fuzzy ratios. 'Family' matched 'Family of the Year' with 0.9
+    WRatio, polluting the catalog cache. The Levenshtein-ratio path
+    must score that pair below the 0.85 cutoff and reject.
+    """
+    respx.get("https://api.spotify.com/v1/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "artists": {
+                    "items": [
+                        {"id": "wrong", "name": "Family of the Year"},
+                        {"id": "other", "name": "Family Force 5"},
+                        {"id": "other2", "name": "The Family Crest"},
+                    ]
+                }
+            },
+        )
+    )
+    assert await client.search_artist("Family") is None
+
+
+@respx.mock
+async def test_search_artist_exact_match_wins_regardless_of_rank(client):
+    """When an exact (case/punctuation-insensitive) name match is in
+    the top 5, pick it even if Spotify ranked something else higher.
+    """
+    respx.get("https://api.spotify.com/v1/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "artists": {
+                    "items": [
+                        {"id": "big", "name": "Family of the Year"},
+                        {"id": "exact", "name": "FAMILY"},  # rank 2 but exact (ci)
+                        {"id": "other", "name": "Family Force 5"},
+                    ]
+                }
+            },
+        )
+    )
+    artist = await client.search_artist("Family")
+    assert artist is not None
+    assert artist["id"] == "exact"
 
 
 @respx.mock
