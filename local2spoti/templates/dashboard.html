@@ -261,6 +261,14 @@
         Stop
       </button>
       <button type="button"
+              hx-post="/api/reevaluate_review"
+              hx-target="#scan-status"
+              hx-swap="innerHTML"
+              class="px-4 py-2 bg-indigo-700 hover:bg-indigo-600 rounded"
+              title="Re-score every review-queue file against the current matcher rules (variant guard, tighter duration). Zero Spotify calls. Promotes/demotes accordingly.">
+        Re-evaluate review
+      </button>
+      <button type="button"
               hx-post="/api/reset"
               hx-target="#scan-status"
               hx-swap="innerHTML"

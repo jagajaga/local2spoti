@@ -403,6 +403,120 @@ async def retry_one_error(request: Request, file_id: int) -> JSONResponse:
     return JSONResponse({"ok": True, "message": "Reset to scanned — click Match to retry"})
 
 
+@router.post("/reevaluate_review")
+async def reevaluate_review(request: Request) -> JSONResponse:
+    """Re-score every review-queue file's stored candidates against
+    the current matcher rules (variant penalty + tighter duration
+    window), without hitting Spotify.
+
+    For each review file:
+      1. Recompute variant_mismatch from the stored spotify_title vs
+         the file's title.
+      2. Apply the variant penalty (-0.30 confidence).
+      3. Re-rank candidates by new confidence.
+      4. Run decide() on the new top. If "auto", promote the file to
+         status='matched'. If "unmatched" (variant guard pushed it
+         down hard), demote to status='unmatched'. Otherwise leave it
+         in review.
+
+    Returns the per-outcome counts. Zero Spotify API calls — purely a
+    DB pass.
+    """
+    from ..matcher import Threshold, _has_variant_marker, decide
+
+    state = request.app.state.app_state
+    threshold = Threshold(state.settings.threshold)
+    cur = await state.db_conn.execute(
+        """SELECT lf.id, lf.artist, lf.title,
+                  mc.id, mc.spotify_track_id, mc.spotify_title,
+                  mc.artist_similarity, mc.title_similarity,
+                  mc.duration_delta_ms, mc.confidence, mc.spotify_album
+           FROM local_file lf
+           JOIN match_candidate mc ON mc.local_file_id = lf.id
+           WHERE lf.status='review'
+           ORDER BY lf.id, mc.confidence DESC"""
+    )
+    rows = await cur.fetchall()
+    by_file: dict[int, list[tuple]] = {}
+    local_titles: dict[int, str] = {}
+    for r in rows:
+        fid = r[0]
+        local_titles[fid] = r[2] or ""
+        by_file.setdefault(fid, []).append(r)
+
+    outcomes = {"promoted": 0, "demoted": 0, "still_review": 0}
+    for fid, cands in by_file.items():
+        local_title = local_titles[fid]
+        local_has_variant = _has_variant_marker(local_title)
+        # Re-score each candidate against the new variant rule. We only
+        # apply the variant penalty here — we don't recompute artist/
+        # title similarity because those are deterministic from the
+        # already-stored fields.
+        rescored = []
+        for c in cands:
+            (
+                _fid,
+                _artist,
+                _title,
+                _cand_id,
+                track_id,
+                sp_title,
+                a_sim,
+                t_sim,
+                dur_delta,
+                old_conf,
+                sp_album,
+            ) = c
+            variant_mismatch = bool(sp_title and _has_variant_marker(sp_title)) and not local_has_variant
+            penalty = 0.30 if variant_mismatch else 0.0
+            # Reconstruct confidence as it would be today. The +0.05
+            # album bonus / +0.10 dur bonus are already baked into
+            # old_conf, so just subtract the new penalty.
+            new_conf = max(0.0, old_conf - penalty)
+            rescored.append((new_conf, a_sim, t_sim, dur_delta, sp_album, variant_mismatch, track_id))
+        rescored.sort(reverse=True)
+        new_top = rescored[0]
+        new_conf, a_sim, t_sim, dur_delta, sp_album, vm, track_id = new_top
+        decision = decide(
+            artist_sim=a_sim,
+            title_sim=t_sim,
+            album_match=False,  # conservative — the BALANCED rule no longer uses album anyway
+            duration_delta_ms=dur_delta,
+            threshold=threshold,
+            variant_mismatch=vm,
+        )
+        if decision == "auto":
+            await state.db_conn.execute(
+                """UPDATE local_file SET
+                    spotify_track_id=?, match_confidence=?,
+                    match_method='auto', status='matched'
+                   WHERE id=?""",
+                (track_id, new_conf, fid),
+            )
+            outcomes["promoted"] += 1
+        elif decision == "unmatched":
+            await state.db_conn.execute(
+                "UPDATE local_file SET status='unmatched' WHERE id=?",
+                (fid,),
+            )
+            outcomes["demoted"] += 1
+        else:
+            outcomes["still_review"] += 1
+    await state.db_conn.commit()
+    return JSONResponse(
+        {
+            "ok": True,
+            "message": (
+                f"re-evaluated {len(by_file)} review files — "
+                f"{outcomes['promoted']} promoted to matched, "
+                f"{outcomes['demoted']} demoted to unmatched, "
+                f"{outcomes['still_review']} still in review"
+            ),
+            **outcomes,
+        }
+    )
+
+
 @router.post("/retry_errors")
 async def retry_errors(request: Request) -> JSONResponse:
     """Move every status='error' file back to 'scanned' so the next match
