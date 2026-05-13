@@ -12,6 +12,10 @@ class FileStatus(StrEnum):
     UNMATCHED = "unmatched"
     ERROR = "error"
     MISSING = "missing"
+    # Explicitly opted-out by the user (e.g. "skip artist X"). Match
+    # stages all filter this out so a re-run of fingerprint / MB-text /
+    # /api/match won't drag the file back into the queue.
+    SKIPPED = "skipped"
 
 
 class MetadataSource(StrEnum):

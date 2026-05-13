@@ -403,6 +403,60 @@ async def retry_one_error(request: Request, file_id: int) -> JSONResponse:
     return JSONResponse({"ok": True, "message": "Reset to scanned — click Match to retry"})
 
 
+@router.post("/skip_by_artist")
+async def skip_by_artist(request: Request, artist: str = Form(...)) -> JSONResponse:
+    """Mark every file whose artist tag is exactly `artist` as
+    status='skipped'. Clears any existing Spotify match + candidates
+    so the file won't be in the push pool either.
+
+    Idempotent. Reversible via /api/unskip_by_artist.
+    """
+    state = request.app.state.app_state
+    cur = await state.db_conn.execute("SELECT id FROM local_file WHERE artist=?", (artist,))
+    ids = [r[0] for r in await cur.fetchall()]
+    if not ids:
+        return JSONResponse({"ok": True, "skipped": 0, "message": f"no files with artist={artist!r}"})
+    placeholders = ",".join("?" * len(ids))
+    await state.db_conn.execute(
+        f"DELETE FROM match_candidate WHERE local_file_id IN ({placeholders})", ids
+    )
+    await state.db_conn.execute(
+        f"""UPDATE local_file SET
+            status='skipped', spotify_track_id=NULL,
+            match_confidence=NULL, match_method=NULL,
+            last_error='skipped: artist={artist}'
+            WHERE id IN ({placeholders})""",
+        ids,
+    )
+    await state.db_conn.commit()
+    return JSONResponse(
+        {
+            "ok": True,
+            "skipped": len(ids),
+            "message": f"Skipped {len(ids)} files with artist={artist!r}",
+        }
+    )
+
+
+@router.post("/unskip_by_artist")
+async def unskip_by_artist(request: Request, artist: str = Form(...)) -> JSONResponse:
+    """Reverse `/api/skip_by_artist`: move every skipped file with this
+    artist back to 'unmatched' so future Match/fingerprint/MB-text
+    runs will reconsider them.
+    """
+    state = request.app.state.app_state
+    cur = await state.db_conn.execute(
+        "UPDATE local_file SET status='unmatched', last_error=NULL "
+        "WHERE artist=? AND status='skipped'",
+        (artist,),
+    )
+    await state.db_conn.commit()
+    n = cur.rowcount
+    return JSONResponse(
+        {"ok": True, "unskipped": n, "message": f"Unskipped {n} files with artist={artist!r}"}
+    )
+
+
 @router.post("/reevaluate_review")
 async def reevaluate_review(request: Request) -> JSONResponse:
     """Re-score every review-queue file's stored candidates against
