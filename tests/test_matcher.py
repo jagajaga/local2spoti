@@ -113,6 +113,49 @@ def test_decide_balanced_album_match_alone_is_not_auto():
     )
 
 
+def test_score_ignores_repackage_markers_for_title_sim():
+    """Regression: 'Lazy Sunday' vs 'Lazy Sunday (Mono Version) (2018
+    Remaster)' is the SAME recording, just a different release. Title
+    similarity should be ~1.0 (after stripping the repackage suffix)
+    and variant_mismatch should be False.
+    """
+    from local2spoti.matcher import score_candidate
+
+    s = score_candidate(
+        local_artist="Small Faces",
+        local_title="Lazy Sunday",
+        local_album=None,
+        local_duration_ms=193152,
+        spotify_artist="Small Faces",
+        spotify_title="Lazy Sunday (Mono Version) (2018 Remaster)",
+        spotify_album=None,
+        spotify_duration_ms=193000,
+    )
+    assert s.title_similarity >= 0.95
+    assert s.variant_mismatch is False
+    assert s.confidence >= 0.85
+
+
+def test_score_keeps_variant_flag_for_live_recordings():
+    """Live/remix/acoustic still mean a *different* recording and must
+    keep tripping variant_mismatch, even though we now ignore
+    remaster/mono/deluxe.
+    """
+    from local2spoti.matcher import score_candidate
+
+    live = score_candidate(
+        local_artist="Billy Idol",
+        local_title="Mony Mony",
+        local_album=None,
+        local_duration_ms=200000,
+        spotify_artist="Billy Idol",
+        spotify_title="Mony Mony - Live at MSG",
+        spotify_album=None,
+        spotify_duration_ms=200000,
+    )
+    assert live.variant_mismatch is True
+
+
 def test_score_flags_variant_mismatch():
     """Spotify's title says 'Live'; local says 'Mony Mony'. The
     candidate should be flagged variant_mismatch and have its
