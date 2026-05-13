@@ -199,9 +199,33 @@ class SpotifyClient:
         return items[0] if items else None
 
     async def search_artist(self, name: str) -> dict[str, Any] | None:
-        data = await self._get("/search", q=name, type="artist", limit=1)
+        """Resolve an artist name to a Spotify artist record.
+
+        Fetches the top 5 results and picks the one whose name actually
+        matches what we asked for. Spotify's default `limit=1` is a trap:
+        for classical / non-English / less-popular artists their
+        relevance ranking often returns a *more* popular adjacent artist
+        (Mozart → Beethoven, DJ Shadow → Massive Attack, etc.) because
+        those artists appear on compilations that mention the searched
+        name. We refuse anything below 0.75 fuzzy similarity — better a
+        cache miss than a 47K-track wrong catalog cached for 30 days.
+        """
+        from .normalize import similarity
+
+        data = await self._get("/search", q=name, type="artist", limit=5)
         items = data.get("artists", {}).get("items", [])
-        return items[0] if items else None
+        if not items:
+            return None
+        best: dict[str, Any] | None = None
+        best_sim = 0.0
+        for it in items:
+            sim = similarity(name, it.get("name", ""))
+            if sim > best_sim:
+                best_sim = sim
+                best = it
+        if best_sim < 0.75:
+            return None
+        return best
 
     async def artist_albums(self, artist_id: str) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []

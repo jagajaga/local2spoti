@@ -85,6 +85,59 @@ async def test_search_artist(client):
 
 
 @respx.mock
+async def test_search_artist_rejects_low_similarity_top_result(client):
+    """Regression: Spotify's /search?type=artist sometimes returns a more
+    popular adjacent artist as the top result (Mozart → Beethoven,
+    DJ Shadow → Massive Attack). Refuse anything below 0.75 fuzzy sim
+    so we don't cache a 47K-track wrong catalog for 30 days.
+    """
+    respx.get("https://api.spotify.com/v1/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "artists": {
+                    "items": [
+                        # All five hits are wrong popular-classical names
+                        # for a "Mozart" query — should reject.
+                        {"id": "1", "name": "Ludwig van Beethoven"},
+                        {"id": "2", "name": "Johann Sebastian Bach"},
+                        {"id": "3", "name": "Berliner Philharmoniker"},
+                        {"id": "4", "name": "Pyotr Ilyich Tchaikovsky"},
+                        {"id": "5", "name": "Antonio Vivaldi"},
+                    ]
+                }
+            },
+        )
+    )
+    assert await client.search_artist("Mozart") is None
+
+
+@respx.mock
+async def test_search_artist_picks_best_among_top5(client):
+    """Top result isn't always the right one — pick whichever of the
+    top-5 actually matches the query name (rapidfuzz ≥ 0.75)."""
+    respx.get("https://api.spotify.com/v1/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "artists": {
+                    "items": [
+                        {"id": "wrong1", "name": "Some Compilation Artist"},
+                        {"id": "wrong2", "name": "Various Artists"},
+                        {"id": "right", "name": "DJ Shadow"},  # the actual hit at rank 3
+                        {"id": "wrong3", "name": "Shadow Gallery"},
+                        {"id": "wrong4", "name": "DJ Shadowboxxer"},
+                    ]
+                }
+            },
+        )
+    )
+    artist = await client.search_artist("DJ Shadow")
+    assert artist is not None
+    assert artist["id"] == "right"
+
+
+@respx.mock
 async def test_artist_albums(client):
     respx.get("https://api.spotify.com/v1/artists/xyz/albums").mock(
         return_value=httpx.Response(
